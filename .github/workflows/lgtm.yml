@@ -22,7 +22,11 @@ on:
   issue_comment:
     types: [created, edited]
 
+# Declaring this block sets every scope NOT listed to `none` — including
+# `contents`, without which even actions/checkout cannot read this repository.
+# Each line below is load-bearing; none is a default.
 permissions:
+  contents: read # check out this repo (never the fork)
   checks: write # post the review-confirmed check
   issues: write # the quiz comment, replies, reactions
   pull-requests: read # read the diff
