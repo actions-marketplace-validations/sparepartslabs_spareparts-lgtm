@@ -70,3 +70,14 @@ test('the PR number is the only thing taken from the artifact', async () => {
   await withRelay(path, () => resolveEvent(client, 'o', 'r'));
   assert.equal((asked[0] as { pull_number: number }).pull_number, 42);
 });
+
+test('the API review state is translated to the webhook casing', async () => {
+  // The REST API says APPROVED; the handlers are written against webhook
+  // payloads, which say approved. Getting this wrong fails the handler's first
+  // guard and returns silently — no log, no check, no quiz.
+  const path = artifact({ pull_request: { number: 7 } });
+  const { client } = stub('abc', [{ state: 'APPROVED', commit_id: 'abc' }]);
+  const event = await withRelay(path, () => resolveEvent(client, 'o', 'r'));
+  const state = (event!.payload as { review: { state: string } }).review.state;
+  assert.equal(state, 'approved');
+});

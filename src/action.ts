@@ -162,9 +162,19 @@ export async function resolveEvent(
 
   // Rebuilt from API data only. Nothing from the artifact survives except the
   // number we used to look it up.
+  //
+  // `state` is lowercased because the two sources disagree: the REST API says
+  // "APPROVED", webhook payloads say "approved", and the handlers are written
+  // against the webhook shape. Reconstructing from the API therefore has to
+  // translate, not just copy — a mismatch here fails the handler's very first
+  // guard and returns silently, which is exactly how it was found.
   return {
     name: 'pull_request_review',
-    payload: { action: 'submitted', review: approval, pull_request: pr },
+    payload: {
+      action: 'submitted',
+      review: { ...approval, state: String(approval.state).toLowerCase() },
+      pull_request: pr,
+    },
   };
 }
 
