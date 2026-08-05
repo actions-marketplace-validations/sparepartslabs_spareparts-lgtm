@@ -206,6 +206,40 @@ function escape(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
+/**
+ * Who this PR's reviewers are.
+ *
+ * `requested` is GitHub's requested-reviewer list; `reviewed` is everyone who
+ * has actually submitted a review — including reviews that were dismissed or
+ * left as comments, since asking a question is part of reviewing, not a
+ * privilege earned by approving.
+ */
+export interface ReviewerSet {
+  requested: string[];
+  reviewed: string[];
+}
+
+/**
+ * May this person ask?
+ *
+ * The gate exists because the question path costs a model call per comment, and
+ * on a public repo anyone can comment. Scoping it to the people actually
+ * reviewing bounds that without a rate limit that would also throttle a
+ * legitimate back-and-forth.
+ *
+ * GitHub logins are case-insensitive, so the comparison is too — a mention from
+ * `Alice` must match a requested reviewer recorded as `alice`.
+ *
+ * The cost of this gate: someone reviewing a PR they were never assigned — the
+ * common case on open source — is not a reviewer by this definition until they
+ * submit something. That is a real exclusion, and the reason a refusal here is
+ * silent rather than a comment telling them they may not ask.
+ */
+export function isReviewer(set: ReviewerSet, login: string): boolean {
+  const who = login.toLowerCase();
+  return [...set.requested, ...set.reviewed].some((r) => r.toLowerCase() === who);
+}
+
 export function renderAnswer(asker: string, answer: Answer): string | null {
   if (answer.kind === 'unavailable') return null;
   if (answer.kind === 'answered') return `@${asker} ${answer.text}`;

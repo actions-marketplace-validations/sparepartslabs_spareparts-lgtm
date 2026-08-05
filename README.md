@@ -22,7 +22,7 @@ Spec: [`specs/001-lgtm-backend/spec.md`](specs/001-lgtm-backend/spec.md).
 | `difficulty` | `medium` | `easy` / `medium` / `hard`. Changes how close the distractors sit to the answer, never which answer is correct. |
 | `surfaceReading` | `true` | List the docs and links the reviewer needs, above the questions. |
 | `webConcepts` | `true` | Also link web explainers for concepts the diff assumes. Uses web search. |
-| `answerQuestions` | `true` | Let reviewers ask questions by mentioning `@lgtm`. |
+| `answerQuestions` | `true` | Let reviewers ask questions by mentioning `@lgtm`. Reviewers only — see below. |
 | `enforce` | `false` | Whether an unanswered quiz holds the merge. |
 | `exemptPaths` | `[]` | Globs never quizzed about, on top of the built-in generated-file set. |
 | `exemptReviewers` | `[]` | Logins never quizzed. Bots always are. |
@@ -59,7 +59,7 @@ Register the app from [`app.yml`](app.yml) — it declares the permission set: r
 ## Other commands
 
 ```sh
-npm test        # 89 tests, no network
+npm test        # 95 tests, no network
 npm run demo    # prints the comment at each state of the flow
 npm run typecheck
 ```
@@ -73,6 +73,14 @@ npm run typecheck
 3. **Ground** — the cited `file` + `@@` hunk is checked against the parsed diff in code (`src/diff.ts`), and the options are checked for structural tells (a correct answer much longer than its distractors).
 
 Everything is conservative in one direction. A candidate that can't be confirmed is dropped, and a quiz with no survivors isn't posted — the check concludes neutral. Asking nothing is fine; asking something wrong fails a reviewer who did their job, which is the one failure this tool can't recover from.
+
+## Asking `@lgtm` a question
+
+Mention `@lgtm` at the start of a line in a PR comment. Background questions get answered, with web search where a source helps: *"what's a CRDT?"*, *"why `SELECT FOR UPDATE` here?"*, *"link me the idempotency docs"*.
+
+Questions that ask LGTM to read the PR **for** you are declined — *"what does this do?"*, *"is this safe to merge?"*, *"any bugs?"* You get a pointer at which file answers it, never the answer. Ambiguous questions resolve toward declining, because answering one of those costs you the understanding you're about to put your name on.
+
+**Reviewers only**: requested reviewers, plus anyone who has submitted a review. Everyone else is ignored silently — a bot that publicly tells someone they may not ask is the policing tone this tool exists to avoid. The cost is real: on repos where anyone reviews without being assigned, a would-be reviewer has to submit something first. Set `answerQuestions: false` to turn the feature off entirely.
 
 ## Status
 

@@ -1,7 +1,13 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { ask, parseMention, renderAnswer, type Answer } from './ask.ts';
+import {
+  ask,
+  isReviewer,
+  parseMention,
+  renderAnswer,
+  type Answer,
+} from './ask.ts';
 
 function stub(...responses: unknown[]) {
   const calls: unknown[] = [];
@@ -156,4 +162,32 @@ test('a decline explains why without scolding', () => {
   assert.match(body, /@alice/);
   assert.match(body, /reading it is the part/i);
   assert.doesNotMatch(body, /cannot|refuse|not allowed|won't help/i);
+});
+
+// --- the reviewer gate -----------------------------------------------------
+
+test('a requested reviewer may ask', () => {
+  assert.ok(isReviewer({ requested: ['alice'], reviewed: [] }, 'alice'));
+});
+
+test('someone who submitted a review may ask, requested or not', () => {
+  assert.ok(isReviewer({ requested: [], reviewed: ['bob'] }, 'bob'));
+});
+
+test('a drive-by commenter may not', () => {
+  assert.ok(!isReviewer({ requested: ['alice'], reviewed: ['bob'] }, 'mallory'));
+});
+
+test('nobody may ask on a PR with no reviewers', () => {
+  assert.ok(!isReviewer({ requested: [], reviewed: [] }, 'alice'));
+});
+
+test('login matching is case-insensitive, as GitHub logins are', () => {
+  assert.ok(isReviewer({ requested: ['Alice'], reviewed: [] }, 'alice'));
+  assert.ok(isReviewer({ requested: [], reviewed: ['bob'] }, 'BOB'));
+});
+
+test('a partial login is not a match', () => {
+  assert.ok(!isReviewer({ requested: ['alice-smith'], reviewed: [] }, 'alice'));
+  assert.ok(!isReviewer({ requested: ['alice'], reviewed: [] }, 'alice-smith'));
 });

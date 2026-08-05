@@ -18,7 +18,7 @@
 import Anthropic from '@anthropic-ai/sdk';
 import type { Probot, Context } from 'probot';
 
-import { ask, parseMention, renderAnswer } from './ask.ts';
+import { ask, isReviewer, parseMention, renderAnswer } from './ask.ts';
 import {
   explainConcepts,
   renderConcepts,
@@ -219,6 +219,45 @@ async function conceptsFor(
 }
 
 /**
+ * Is this person reviewing this PR?
+ *
+ * Two lists: who was asked to review, and who has actually submitted one. On
+ * an API failure this returns false — the gate fails closed, because the cost
+ * of wrongly refusing is a question that goes unanswered, and the cost of
+ * wrongly allowing is an unbounded model call per drive-by comment.
+ */
+async function isPrReviewer(
+  context: AnyContext,
+  prNumber: number,
+  login: string,
+): Promise<boolean> {
+  try {
+    const [{ data: requested }, reviews] = await Promise.all([
+      context.octokit.rest.pulls.listRequestedReviewers({
+        ...context.repo(),
+        pull_number: prNumber,
+      }),
+      context.octokit.paginate(context.octokit.rest.pulls.listReviews, {
+        ...context.repo(),
+        pull_number: prNumber,
+        per_page: 100,
+      }),
+    ]);
+
+    return isReviewer(
+      {
+        requested: requested.users.map((u) => u.login),
+        reviewed: reviews.map((r) => r.user?.login).filter((l): l is string => !!l),
+      },
+      login,
+    );
+  } catch (err) {
+    context.log.warn({ err }, 'could not resolve reviewers — refusing to answer');
+    return false;
+  }
+}
+
+/**
  * A reviewer mentioned @lgtm. Answer background; decline to read the PR for
  * them (see `ask.ts` for why that distinction is the whole feature).
  */
@@ -238,6 +277,15 @@ async function handleMention(
   const { config } = await loadConfig(context);
   if (!config.answerQuestions) return;
   if (!process.env.ANTHROPIC_API_KEY) return;
+
+  // Reviewers only. Silently — a bot that publicly tells someone they may not
+  // ask is the policing tone this whole tool is built to avoid, and the person
+  // who typed the question is better served by a maintainer reading the log
+  // than by a refusal in the thread.
+  if (!(await isPrReviewer(context, issue.number, sender.login))) {
+    context.log.info({ sender: sender.login }, 'mention from a non-reviewer');
+    return;
+  }
 
   // Acknowledge before the model call — a question that takes 20 seconds to
   // answer reads as a bot that ignored you.
