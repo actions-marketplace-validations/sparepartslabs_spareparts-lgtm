@@ -336,8 +336,17 @@ function pendingOutcome(config: Config): Outcome {
 const WAIVE_RE = /^\s*\/lgtm\s+waive\b/im;
 
 
-export default function app(probot: Probot) {
-  probot.on('pull_request_review.submitted', async (context) => {
+/**
+ * The handlers, named and exported so two entry points can drive them.
+ *
+ * `app.ts` wires them to Probot (the GitHub App); `action.ts` wires them to a
+ * workflow run (the GitHub Action). Both hand in something Probot-Context
+ * shaped — `octokit`, `repo()`, `log`, `payload` — so the logic below never
+ * learns which one it is running under.
+ */
+export async function onReviewSubmitted(
+  context: Context<'pull_request_review.submitted'>,
+): Promise<void> {
     const { review, pull_request: pr } = context.payload;
 
     if (review.state !== 'approved') return;
@@ -432,9 +441,11 @@ export default function app(probot: Probot) {
         footnote,
     );
     });
-  });
+}
 
-  probot.on('issue_comment.edited', async (context) => {
+export async function onQuizCommentEdited(
+  context: Context<'issue_comment.edited'>,
+): Promise<void> {
     const { comment, sender, issue } = context.payload;
 
     if (!looksLikeQuiz(comment.body)) return;
@@ -530,14 +541,17 @@ export default function app(probot: Probot) {
         ),
       });
     }
-  });
+}
 
   /**
    * `/lgtm waive` — the exit. With enforcement on, a reviewer who cannot answer
    * (a bad question, an emergency, a diff LGTM misjudged) must never be able to
    * strand a PR, so anyone who could have merged it anyway can release it.
    */
-  probot.on('issue_comment.created', async (context) => {
+
+export async function onCommentCreated(
+  context: Context<'issue_comment.created'>,
+): Promise<void> {
     const { comment, issue, sender } = context.payload;
 
     if (!issue.pull_request) return;
@@ -585,7 +599,7 @@ export default function app(probot: Probot) {
       { waivedBy: sender.login, pr: issue.number, head: pr.head.sha },
       'waived',
     );
-  });
+}
 
   /**
    * A confirmation is bound to the commit it was answered against (FR-027), so
@@ -593,9 +607,19 @@ export default function app(probot: Probot) {
    * right: no check means the required check is missing, which blocks until the
    * next approval produces one.
    */
-  probot.on('pull_request.synchronize', async (context) => {
+
+export async function onHeadMoved(
+  context: Context<'pull_request.synchronize'>,
+): Promise<void> {
     // A confirmation is bound to the commit it was answered against (FR-027).
     // The new head simply has no check yet; nothing to undo.
     context.log.info({ head: context.payload.pull_request.head.sha }, 'head moved');
-  });
+}
+
+/** Probot entry point. `action.ts` is the other one. */
+export default function app(probot: Probot) {
+  probot.on('pull_request_review.submitted', onReviewSubmitted);
+  probot.on('issue_comment.edited', onQuizCommentEdited);
+  probot.on('issue_comment.created', onCommentCreated);
+  probot.on('pull_request.synchronize', onHeadMoved);
 }

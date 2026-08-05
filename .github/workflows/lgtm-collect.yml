@@ -1,0 +1,41 @@
+# Half one of two. Deliberately powerless.
+#
+# On a pull request from a fork, a `pull_request_review` workflow receives no
+# secrets and a read-only token — measured, not assumed — so it cannot generate
+# a quiz or post a check. All it does is write the event to an artifact and
+# exit. The privileged half (`lgtm.yml`) picks that up via `workflow_run`.
+#
+# Nothing here needs permissions, and nothing here should ever gain any: this
+# job runs in response to fork activity, and its only job is to hand the event
+# to something that can act on it.
+name: LGTM (collect)
+
+on:
+  pull_request_review:
+    types: [submitted]
+
+permissions: {}
+
+jobs:
+  collect:
+    # Approvals only. A comment or a "request changes" review is not someone
+    # putting their name on the change, so there is nothing to confirm.
+    if: github.event.review.state == 'approved'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Package the event
+        env:
+          # Via env rather than inline interpolation: the payload is
+          # attacker-influenced on a fork PR, and interpolating it into a shell
+          # script would be a script-injection hole.
+          EVENT: ${{ toJSON(github.event) }}
+        run: |
+          mkdir -p relay
+          jq -n --arg name pull_request_review --argjson payload "$EVENT" \
+            '{event_name: $name, payload: $payload}' > relay/event.json
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lgtm-event
+          path: relay/event.json
+          retention-days: 1

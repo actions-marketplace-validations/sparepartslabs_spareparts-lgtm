@@ -1,0 +1,78 @@
+# Half two: the privileged one.
+#
+# Two ways in, because they have different fork behaviour:
+#
+#   workflow_run   — relayed from `lgtm-collect.yml`, which is how an approval
+#                    reaches us at all on a fork PR (that event gets no secrets
+#                    of its own).
+#   issue_comment  — direct. This event DOES carry secrets and a write token on
+#                    fork PRs, so answering a quiz, waiving, and @lgtm mentions
+#                    need no relay.
+#
+# ⚠️  This job holds secrets and a write token while handling data that a fork
+# author controls. It MUST NOT check out or execute anything from the fork. The
+# only inputs are the event payload and the diff, both read as data. Do not add
+# `actions/checkout` with a fork ref to this file.
+name: LGTM
+
+on:
+  workflow_run:
+    workflows: [LGTM (collect)]
+    types: [completed]
+  issue_comment:
+    types: [created, edited]
+
+permissions:
+  checks: write # post the review-confirmed check
+  issues: write # the quiz comment, replies, reactions
+  pull-requests: read # read the diff
+  actions: read # download the relayed event artifact
+
+jobs:
+  lgtm:
+    # Only comments on pull requests, and only our own quiz or a command —
+    # every other comment on every PR would otherwise spin a runner.
+    if: >
+      github.event_name == 'workflow_run' ||
+      (github.event.issue.pull_request != null &&
+       (contains(github.event.comment.body, 'lgtm:v1') ||
+        contains(github.event.comment.body, '/lgtm waive') ||
+        contains(github.event.comment.body, '@lgtm')))
+    runs-on: ubuntu-latest
+    steps:
+      # Checks out THIS repository at the default branch — never the fork's
+      # code. On the issue_comment path that is what GitHub gives us anyway; on
+      # the workflow_run path it is the security property the whole design
+      # rests on.
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci --ignore-scripts
+
+      - name: Fetch the relayed event
+        if: github.event_name == 'workflow_run'
+        uses: actions/download-artifact@v4
+        with:
+          name: lgtm-event
+          path: relay
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Run LGTM
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          # Signs the quiz seal so a tampered quiz is reissued rather than
+          # graded. Falls back to GITHUB_TOKEN, which is per-run and would make
+          # every quiz unverifiable on the next run — set LGTM_SEAL_KEY as a
+          # repository secret for anything real.
+          LGTM_SEAL_KEY: ${{ secrets.LGTM_SEAL_KEY || secrets.GITHUB_TOKEN }}
+          LGTM_BOT_LOGIN: github-actions
+          # Set only on the relay path; its presence is what tells the entry
+          # point to read the artifact instead of GitHub's own event file.
+          LGTM_RELAYED_EVENT: ${{ github.event_name == 'workflow_run' && 'relay/event.json' || '' }}
+        run: npm run action
