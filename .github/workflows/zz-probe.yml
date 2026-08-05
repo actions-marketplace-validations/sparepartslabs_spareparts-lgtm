@@ -1,0 +1,9 @@
+name: zz-probe
+on:
+  pull_request_review:
+    types: [submitted]
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "state=${{ github.event.review.state }}"
