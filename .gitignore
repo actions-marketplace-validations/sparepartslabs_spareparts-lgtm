@@ -2,3 +2,6 @@ node_modules/
 .env
 *.pem
 .DS_Store
+
+# Design notes — kept locally, not shipped with the tool.
+specs/

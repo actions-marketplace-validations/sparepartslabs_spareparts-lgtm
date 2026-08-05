@@ -11,7 +11,6 @@ Not a code reviewer. It has no opinion on whether the change is good — only on
 - The answer key is never published. The comment carries a keyed hash per correct option, authenticated so an edited quiz is reissued rather than graded.
 - Approvals reach privileged code by relay, because `pull_request_review` gets no secrets on a fork PR. The relay artifact is treated as untrusted.
 
-Spec: [`specs/001-lgtm-backend/spec.md`](specs/001-lgtm-backend/spec.md).
 
 ## Configuration
 
