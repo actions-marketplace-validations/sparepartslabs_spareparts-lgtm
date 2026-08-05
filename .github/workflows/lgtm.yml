@@ -75,7 +75,13 @@ jobs:
           # every quiz unverifiable on the next run — set LGTM_SEAL_KEY as a
           # repository secret for anything real.
           LGTM_SEAL_KEY: ${{ secrets.LGTM_SEAL_KEY || secrets.GITHUB_TOKEN }}
-          LGTM_BOT_LOGIN: github-actions
+          # The handle that summons the bot — a trigger token, not an account.
+          # As an Action there is no `lgtm` user to mention: replies come from
+          # `github-actions[bot]`. Keeping the token `@lgtm` matches the docs
+          # and the job filter above, and reads better than `@github-actions`,
+          # which would also ping the real Actions bot. The don't-answer-
+          # ourselves guard keys on the commenter being a Bot, not on this.
+          LGTM_BOT_LOGIN: lgtm
           # Set only on the relay path; its presence is what tells the entry
           # point to read the artifact instead of GitHub's own event file.
           LGTM_RELAYED_EVENT: ${{ github.event_name == 'workflow_run' && 'relay/event.json' || '' }}
