@@ -20,14 +20,25 @@
  *   pull_request_review    | no   → must relay via workflow_run
  *   issue_comment          | yes  → runs directly
  *
- * SECURITY: the `workflow_run` half is privileged and handles data derived from
- * a fork. It must never check out or execute anything from that fork. Here the
- * only fork-derived input is the event payload and the diff, both treated
- * strictly as data — the diff is sent to a model, never run. Do not add a
- * checkout step to the privileged workflow.
+ * SECURITY: the `workflow_run` half is privileged and handles fork-derived data.
+ * Two rules, both learned the hard way:
+ *
+ *   1. It never checks out or executes anything from the fork. The diff is sent
+ *      to a model, never run. Do not add a checkout step for a fork ref.
+ *   2. It does not trust the relayed artifact. `pull_request_review` workflows
+ *      run from the PR's HEAD branch — measured, not assumed — so on a fork PR
+ *      the fork supplies the collector that writes that artifact. A forged one
+ *      could name a reviewer who never approved. `resolveEvent` therefore takes
+ *      only a PR number from it and re-reads everything else from the API.
+ *
+ * A consequence of that same head-branch rule: a fork can delete the collector
+ * and no quiz is generated for its PR. That fails in the safe direction — with
+ * `enforce: true` the required check simply never appears, so the PR is blocked
+ * rather than waved through.
  */
 
 import { readFile } from 'node:fs/promises';
+import { pathToFileURL } from 'node:url';
 
 import { ProbotOctokit } from 'probot';
 
@@ -42,6 +53,20 @@ import {
  * The slice of Probot's `Context` the handlers actually use. Assembling it by
  * hand is what lets one set of handlers serve both entry points.
  */
+/** The two octokit methods `resolveEvent` needs, so it can be tested. */
+export interface OctokitLike {
+  rest: {
+    pulls: {
+      get(args: unknown): Promise<{ data: { head: { sha: string } } }>;
+      listReviews: unknown;
+    };
+  };
+  paginate(
+    route: unknown,
+    args: unknown,
+  ): Promise<{ state: string; commit_id?: string }[]>;
+}
+
 interface ActionContext {
   octokit: unknown;
   payload: unknown;
@@ -78,34 +103,83 @@ function required(name: string): string {
  * is in the artifact the collector uploaded, and `LGTM_RELAYED_EVENT` points at
  * where the workflow unpacked it.
  */
-async function resolveEvent(): Promise<{ name: string; payload: unknown }> {
+export async function resolveEvent(
+  octokit: OctokitLike,
+  owner: string,
+  repo: string,
+): Promise<{ name: string; payload: unknown } | null> {
   const relayed = process.env.LGTM_RELAYED_EVENT;
-  if (relayed) {
-    const raw = JSON.parse(await readFile(relayed, 'utf8')) as {
-      event_name?: string;
-      payload?: unknown;
+  if (!relayed) {
+    const path = required('GITHUB_EVENT_PATH');
+    return {
+      name: required('GITHUB_EVENT_NAME'),
+      payload: JSON.parse(await readFile(path, 'utf8')),
     };
-    if (!raw.event_name || raw.payload === undefined) {
-      throw new Error('Relayed event artifact is malformed.');
-    }
-    return { name: raw.event_name, payload: raw.payload };
   }
 
-  const path = required('GITHUB_EVENT_PATH');
+  // THE ARTIFACT IS UNTRUSTED.
+  //
+  // `pull_request_review` workflows run from the PR's HEAD branch — measured,
+  // not assumed — so on a fork PR the *fork* supplies the collector that wrote
+  // this file. Its contents are attacker-controlled: a forged payload could
+  // name a reviewer who never approved, or point at an unrelated PR.
+  //
+  // So the artifact contributes exactly one thing — a PR number, which is a
+  // hint, not evidence — and everything acted upon is re-read from the API
+  // with our own token. If the API does not show a real approval on that PR,
+  // there is nothing to do.
+  const raw = JSON.parse(await readFile(relayed, 'utf8')) as {
+    payload?: { pull_request?: { number?: unknown } };
+  };
+  const claimed = raw.payload?.pull_request?.number;
+  if (typeof claimed !== 'number' || !Number.isInteger(claimed) || claimed < 1) {
+    console.log('[warn] relayed artifact names no usable pull request');
+    return null;
+  }
+
+  const { data: pr } = await octokit.rest.pulls.get({
+    owner,
+    repo,
+    pull_number: claimed,
+  });
+  const reviews = await octokit.paginate(octokit.rest.pulls.listReviews, {
+    owner,
+    repo,
+    pull_number: claimed,
+    per_page: 100,
+  });
+
+  // The most recent approval that is still current for this head. Reviews are
+  // returned oldest-first, so the last match wins.
+  const approval = reviews
+    .filter((r) => r.state === 'APPROVED' && r.commit_id === pr.head.sha)
+    .pop();
+
+  if (!approval) {
+    console.log(`[info] no current approval on #${claimed} — nothing to confirm`);
+    return null;
+  }
+
+  // Rebuilt from API data only. Nothing from the artifact survives except the
+  // number we used to look it up.
   return {
-    name: required('GITHUB_EVENT_NAME'),
-    payload: JSON.parse(await readFile(path, 'utf8')),
+    name: 'pull_request_review',
+    payload: { action: 'submitted', review: approval, pull_request: pr },
   };
 }
 
 export async function main(): Promise<void> {
-  const { name, payload } = await resolveEvent();
   const [owner, repo] = required('GITHUB_REPOSITORY').split('/');
+  // ProbotOctokit rather than a bare Octokit so the handlers keep the
+  // `.config` plugin they use to read `.github/lgtm.yml`.
+  const octokit = new ProbotOctokit({ auth: { token: required('GITHUB_TOKEN') } });
+
+  const event = await resolveEvent(octokit as unknown as OctokitLike, owner, repo);
+  if (!event) return;
+  const { name, payload } = event;
 
   const context: ActionContext = {
-    // ProbotOctokit rather than a bare Octokit so the handlers keep the
-    // `.config` plugin they use to read `.github/lgtm.yml`.
-    octokit: new ProbotOctokit({ auth: { token: required('GITHUB_TOKEN') } }),
+    octokit,
     payload,
     repo: () => ({ owner, repo }),
     log: { info: line('info'), warn: line('warn'), error: line('error') },
@@ -132,10 +206,19 @@ export async function main(): Promise<void> {
   }
 }
 
-// A thrown error must fail the job loudly. The check run is created before any
-// model work starts, so a crash here leaves a visible neutral check rather than
-// a silent nothing — but the job should still go red so the log gets read.
-await main().catch((err) => {
-  console.error('[error] lgtm failed', err);
-  process.exitCode = 1;
-});
+// Run only when executed directly, never on import. Without this guard the
+// tests trip it just by importing `resolveEvent`, which is also the signal that
+// a module doing work at import time is the wrong shape regardless of tests.
+const isEntryPoint =
+  process.argv[1] !== undefined &&
+  import.meta.url === pathToFileURL(process.argv[1]).href;
+
+if (isEntryPoint) {
+  // A thrown error must fail the job loudly. The check run is created before
+  // any model work starts, so a crash leaves a visible neutral check rather
+  // than a silent nothing — but the job should still go red so the log is read.
+  await main().catch((err) => {
+    console.error('[error] lgtm failed', err);
+    process.exitCode = 1;
+  });
+}
