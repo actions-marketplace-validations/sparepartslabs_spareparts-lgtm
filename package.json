@@ -15,6 +15,7 @@
     "typescript": "^5"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.115.0",
     "probot": "^14.3.2"
   }
 }

@@ -11,8 +11,15 @@
  * handler finishes well inside GitHub's timeout).
  */
 
+import Anthropic from '@anthropic-ai/sdk';
 import type { Probot, Context } from 'probot';
 
+import { ask, parseMention, renderAnswer } from './ask.ts';
+import {
+  explainConcepts,
+  renderConcepts,
+  MAX_CONCEPTS,
+} from './concepts.ts';
 import { DEFAULTS, parseConfig, type Config } from './config.ts';
 import { generate } from './questions.ts';
 import { collect, renderReading } from './reading.ts';
@@ -29,6 +36,13 @@ import {
 } from './quiz.ts';
 
 const CHECK_NAME = 'LGTM — review confirmed';
+
+/**
+ * Above this, skip the concept lookup rather than truncating the diff. A
+ * truncated diff produces concepts drawn from an arbitrary prefix, which is
+ * worse than no concepts at all — the grounding rule silently stops holding.
+ */
+const MAX_DIFF_CHARS = 400_000;
 
 function sealKey(): string {
   const key = process.env.LGTM_SEAL_KEY;
@@ -109,6 +123,122 @@ async function quizFor(
  */
 type Outcome = 'success' | 'neutral' | 'waiting';
 
+/**
+ * The web-explainer section, or nothing.
+ *
+ * Every failure path returns null: no API key configured, the model declined,
+ * search didn't finish, the response didn't parse. The quiz is posted either
+ * way — a reviewer must never be blocked, or even delayed, because an optional
+ * reading aid was unavailable (spec FR-025, FR-035).
+ */
+async function conceptsFor(
+  context: AnyContext,
+  prNumber: number,
+  files: { filename: string }[],
+): Promise<string | null> {
+  if (!process.env.ANTHROPIC_API_KEY) return null;
+
+  try {
+    // The diff, not the file list — concepts live in the hunks. `.diff` is a
+    // media-type override, so the response body is text rather than JSON.
+    const { data: diff } = await context.octokit.rest.pulls.get({
+      ...context.repo(),
+      pull_number: prNumber,
+      mediaType: { format: 'diff' },
+    });
+
+    const text = String(diff);
+    if (text.length > MAX_DIFF_CHARS) return null;
+
+    const result = await explainConcepts(new Anthropic(), {
+      diff: text,
+      context: languagesIn(files),
+      max: MAX_CONCEPTS,
+    });
+
+    if (result.kind === 'unavailable') {
+      context.log.info({ reason: result.reason }, 'no web concepts');
+      return null;
+    }
+    return renderConcepts(result.concepts);
+  } catch (err) {
+    context.log.warn({ err }, 'concept lookup failed');
+    return null;
+  }
+}
+
+/**
+ * A reviewer mentioned @lgtm. Answer background; decline to read the PR for
+ * them (see `ask.ts` for why that distinction is the whole feature).
+ */
+async function handleMention(
+  context: Context<'issue_comment.created'>,
+): Promise<void> {
+  const { comment, issue, sender } = context.payload;
+
+  // Never answer ourselves: our own replies contain the handle, and a bot
+  // answering its own comment is an infinite loop with a billing account.
+  if (comment.user?.type === 'Bot') return;
+
+  const botLogin = process.env.LGTM_BOT_LOGIN ?? 'lgtm';
+  const question = parseMention(comment.body, botLogin);
+  if (!question) return;
+
+  const { config } = await loadConfig(context);
+  if (!config.answerQuestions) return;
+  if (!process.env.ANTHROPIC_API_KEY) return;
+
+  // Acknowledge before the model call — a question that takes 20 seconds to
+  // answer reads as a bot that ignored you.
+  await context.octokit.rest.reactions.createForIssueComment({
+    ...context.repo(),
+    comment_id: comment.id,
+    content: 'eyes',
+  });
+
+  try {
+    const { data: diff } = await context.octokit.rest.pulls.get({
+      ...context.repo(),
+      pull_number: issue.number,
+      mediaType: { format: 'diff' },
+    });
+
+    const answer = await ask(new Anthropic(), {
+      question,
+      diff: String(diff).slice(0, MAX_DIFF_CHARS),
+      asker: sender.login,
+    });
+
+    const body = renderAnswer(sender.login, answer);
+    if (!body) {
+      context.log.info(
+        { reason: answer.kind === 'unavailable' ? answer.reason : answer.kind },
+        'no answer posted',
+      );
+      return;
+    }
+
+    await context.octokit.rest.issues.createComment({
+      ...context.repo(),
+      issue_number: issue.number,
+      body,
+    });
+    context.log.info({ asker: sender.login, kind: answer.kind }, 'answered');
+  } catch (err) {
+    context.log.warn({ err }, 'question handling failed');
+  }
+}
+
+/** So the model doesn't explain the stack the repo is obviously written in. */
+function languagesIn(files: { filename: string }[]): string {
+  const exts = new Set(
+    files
+      .map((f) => f.filename.slice(f.filename.lastIndexOf('.') + 1))
+      .filter((e) => e && e.length <= 5),
+  );
+  return [...exts].sort().join(', ') || 'unknown';
+}
+
 async function setCheck(
   context: AnyContext,
   head: string,
@@ -187,13 +317,20 @@ export default function app(probot: Probot) {
     }
 
     const reading = config.surfaceReading
-      ? renderReading(
-          collect({
-            files,
-            prBody: pr.body,
-            repo: { owner: context.repo().owner, repo: context.repo().repo, ref: head },
-          }),
-        )
+      ? [
+          renderReading(
+            collect({
+              files,
+              prBody: pr.body,
+              repo: { owner: context.repo().owner, repo: context.repo().repo, ref: head },
+            }),
+          ),
+          config.webConcepts
+            ? await conceptsFor(context, pr.number, files)
+            : null,
+        ]
+          .filter(Boolean)
+          .join('\n\n') || null
       : null;
 
     const body = renderQuiz(
@@ -340,7 +477,13 @@ export default function app(probot: Probot) {
     const { comment, issue, sender } = context.payload;
 
     if (!issue.pull_request) return;
-    if (!WAIVE_RE.test(comment.body)) return;
+
+    // A mention is not a waiver; check the waiver command first so
+    // "@lgtm /lgtm waive" can't be routed to the question path.
+    if (!WAIVE_RE.test(comment.body)) {
+      await handleMention(context);
+      return;
+    }
 
     if (!CAN_WAIVE.has(comment.author_association)) {
       await context.octokit.rest.issues.createComment({

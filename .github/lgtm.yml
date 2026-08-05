@@ -12,6 +12,13 @@ difficulty: medium
 # List the docs and links a reviewer needs, above the questions.
 surfaceReading: true
 
+# Also link out to explainers for concepts the diff assumes you know.
+# Uses web search. Ignored when surfaceReading is off.
+webConcepts: true
+
+# Let reviewers ask questions by mentioning @lgtm in a PR comment.
+answerQuestions: true
+
 # Off means the check is reported but never holds a merge. Turning it on also
 # requires marking "LGTM — review confirmed" as a required check in branch
 # protection — LGTM cannot and will not do that for you.

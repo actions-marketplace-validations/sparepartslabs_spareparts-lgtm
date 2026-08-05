@@ -34,6 +34,24 @@ export interface Config {
    * well. That is the difference between a checkpoint and a help.
    */
   surfaceReading: boolean;
+  /**
+   * Also surface web explainers for concepts the diff assumes knowledge of.
+   *
+   * Only meaningful when `surfaceReading` is on. Separate from it because of
+   * where the diff travels: the model issues web searches, so diff-derived
+   * query terms reach a search provider and the links come back from third
+   * parties. Note this is *not* the same as "the diff reaches a model" — the
+   * real quiz generator does that too, for every quiz, whatever this is set to.
+   */
+  webConcepts: boolean;
+  /**
+   * Let reviewers ask questions by mentioning @lgtm on a PR.
+   *
+   * Independent of `surfaceReading`: this is a reviewer pulling context when
+   * they want it, not LGTM pushing it. Questions about the PR itself are
+   * declined regardless of this setting — see `ask.ts`.
+   */
+  answerQuestions: boolean;
   /** The LGTM check is reported either way; this decides if it can gate merge. */
   enforce: boolean;
   /** Globs never worth quizzing, in addition to the built-in generated-file set. */
@@ -46,6 +64,8 @@ export const DEFAULTS: Config = {
   questions: 2,
   difficulty: 'medium',
   surfaceReading: true,
+  webConcepts: true,
+  answerQuestions: true,
   enforce: false,
   exemptPaths: [],
   exemptReviewers: [],
@@ -134,6 +154,8 @@ export function parseConfig(raw: unknown): LoadedConfig {
       questions,
       difficulty,
       surfaceReading: bool('surfaceReading', DEFAULTS.surfaceReading),
+      webConcepts: bool('webConcepts', DEFAULTS.webConcepts),
+      answerQuestions: bool('answerQuestions', DEFAULTS.answerQuestions),
       enforce: bool('enforce', DEFAULTS.enforce),
       exemptPaths: readStringArray(
         o.exemptPaths,
