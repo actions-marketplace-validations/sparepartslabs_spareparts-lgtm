@@ -287,6 +287,11 @@ async function handleMention(
   // ask, not how often — a maintainer in a loop with the bot is still a model
   // call per comment. Keyed on the asker rather than the PR so two reviewers
   // working the same PR never throttle each other.
+  // One clock reading for the whole decision. Calling Date.now() again below
+  // would let the sweep and the freshness check disagree: an entry could be
+  // spared by the sweep and then judged expired a microsecond later, or the
+  // reverse. Reading once makes the two consistent by construction rather
+  // than by luck.
   const now = Date.now();
   sweep(now);
 
