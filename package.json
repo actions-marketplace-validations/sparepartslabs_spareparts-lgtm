@@ -5,11 +5,8 @@
   "type": "module",
   "scripts": {
     "test": "node --import tsx --test src/*.test.ts",
-    "demo": "node --import tsx src/demo.ts",
-    "dev": "node --import tsx --env-file=.env src/server.ts",
-    "typecheck": "tsc --noEmit",
-    "setup": "node --import tsx --env-file-if-exists=.env src/setup.ts",
-    "action": "node --import tsx src/action.ts"
+    "action": "node --import tsx src/action.ts",
+    "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
     "@types/node": "^20",

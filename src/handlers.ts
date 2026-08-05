@@ -1,22 +1,20 @@
 /**
- * The Probot app.
+ * What LGTM does, independent of how it was invoked.
  *
- * What is real: event routing, the sealed comment, grading, the check run, and
- * question generation (`generator.ts` — propose, verify, ground).
+ * `action.ts` is the only entry point: it turns a workflow run into the
+ * Probot-Context shape these handlers expect and dispatches. There used to be
+ * a second entry point — a hosted GitHub App — and it was deleted rather than
+ * maintained, because as an Action each repository supplies its own model key
+ * and there is no server to run.
  *
- * What is NOT real yet: the queue. Spec FR-002 puts model work in a worker
- * because GitHub wants a webhook acknowledged in ten seconds and generation —
- * one proposal call plus one verification call per candidate — takes far
- * longer. Until that worker exists, `deferred()` below runs the work outside
- * the acknowledged request. That keeps GitHub happy and is fine for a
- * single-process prototype, but it is not durable: a restart mid-generation
- * loses the work silently, and nothing retries it. The check is created
- * *before* the work starts precisely so that failure is visible rather than
- * invisible.
+ * `probot` survives as a *library* here, not a framework: `ProbotOctokit` for
+ * an Octokit that carries the config plugin, and `Context` for the webhook
+ * payload types that give every handler below its type safety. Nothing starts
+ * a Probot server any more.
  */
 
 import Anthropic from '@anthropic-ai/sdk';
-import type { Probot, Context } from 'probot';
+import type { Context } from 'probot';
 
 import { ask, hasWriteAccess, parseMention, renderAnswer } from './ask.ts';
 import {
@@ -92,19 +90,6 @@ function sealKey(): string {
  * and is what the helpers actually need.
  */
 type AnyContext = Context;
-
-/**
- * Run work outside the acknowledged webhook request.
- *
- * The stand-in for FR-002's worker. Deliberately loud on failure: without a
- * queue there is no retry and no dead-letter, so an error that only reached a
- * dropped promise would be a quiz that silently never appeared.
- */
-function deferred(context: AnyContext, work: () => Promise<void>): void {
-  void work().catch((err) => {
-    context.log.error({ err }, 'deferred work failed — no retry exists');
-  });
-}
 
 /**
  * Config from the base branch (spec FR-028), never the head. `context.config`
@@ -396,12 +381,11 @@ const WAIVE_RE = /^\s*\/lgtm\s+waive\b/im;
 
 
 /**
- * The handlers, named and exported so two entry points can drive them.
+ * The handlers. `action.ts` assembles a context and calls one of these.
  *
- * `app.ts` wires them to Probot (the GitHub App); `action.ts` wires them to a
- * workflow run (the GitHub Action). Both hand in something Probot-Context
- * shaped — `octokit`, `repo()`, `log`, `payload` — so the logic below never
- * learns which one it is running under.
+ * They are kept separate from the entry point so the logic can be exercised
+ * without a workflow, and so a second entry point stays possible without
+ * touching anything below.
  */
 export async function onReviewSubmitted(
   context: Context<'pull_request_review.submitted'>,
@@ -420,9 +404,6 @@ export async function onReviewSubmitted(
 
     const head = pr.head.sha;
 
-    // Generation is one proposal call plus a verification call per candidate —
-    // far past GitHub's ten-second webhook budget. Acknowledge now, work after.
-    deferred(context, async () => {
     const files = await context.octokit.paginate(
       context.octokit.rest.pulls.listFiles,
       { ...context.repo(), pull_number: pr.number, per_page: 100 },
@@ -499,7 +480,6 @@ export async function onReviewSubmitted(
             'hold the merge.') +
         footnote,
     );
-    });
 }
 
 export async function onQuizCommentEdited(
@@ -675,10 +655,3 @@ export async function onHeadMoved(
     context.log.info({ head: context.payload.pull_request.head.sha }, 'head moved');
 }
 
-/** Probot entry point. `action.ts` is the other one. */
-export default function app(probot: Probot) {
-  probot.on('pull_request_review.submitted', onReviewSubmitted);
-  probot.on('issue_comment.edited', onQuizCommentEdited);
-  probot.on('issue_comment.created', onCommentCreated);
-  probot.on('pull_request.synchronize', onHeadMoved);
-}
