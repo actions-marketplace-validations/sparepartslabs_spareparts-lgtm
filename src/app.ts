@@ -49,6 +49,16 @@ const CHECK_NAME = 'LGTM — review confirmed';
  */
 const MAX_DIFF_CHARS = 400_000;
 
+/** How long before the same person may be answered again on the same PR. */
+const ANSWER_COOLDOWN_MS = 60 * 60 * 1000;
+
+/**
+ * In-memory, so it resets on restart. That is the wrong direction for a limit
+ * — a crash loop would let the cooldown be bypassed indefinitely — and is
+ * acceptable only until FR-002's worker gives this somewhere durable to live.
+ */
+const recentAnswers = new Map<string, number>();
+
 function sealKey(): string {
   const key = process.env.LGTM_SEAL_KEY;
   if (!key) throw new Error('LGTM_SEAL_KEY is not set');
@@ -252,6 +262,18 @@ async function handleMention(
     );
     return;
   }
+
+  // One answer per person per PR per hour. The write-access gate bounds who can
+  // ask, not how often — a maintainer in a loop with the bot is still a model
+  // call per comment. Keyed on the asker rather than the PR so two reviewers
+  // working the same PR never throttle each other.
+  const bucket = `${context.repo().owner}/${context.repo().repo}#${issue.number}:${sender.login}`;
+  const last = recentAnswers.get(bucket);
+  if (last !== undefined && Date.now() - last < ANSWER_COOLDOWN_MS) {
+    context.log.info({ bucket }, 'mention within cooldown');
+    return;
+  }
+  recentAnswers.set(bucket, Date.now());
 
   // Acknowledge before the model call — a question that takes 20 seconds to
   // answer reads as a bot that ignored you.
