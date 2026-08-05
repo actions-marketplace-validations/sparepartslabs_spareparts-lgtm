@@ -21,6 +21,8 @@ Spec: [`specs/001-lgtm-backend/spec.md`](specs/001-lgtm-backend/spec.md).
 | `questions` | `2` | 1–5. Raising it deepens the quiz rather than reshuffling it. |
 | `difficulty` | `medium` | `easy` / `medium` / `hard`. Changes how close the distractors sit to the answer, never which answer is correct. |
 | `surfaceReading` | `true` | List the docs and links the reviewer needs, above the questions. |
+| `webConcepts` | `true` | Also link web explainers for concepts the diff assumes. Uses web search. |
+| `answerQuestions` | `true` | Let reviewers ask questions by mentioning `@lgtm`. |
 | `enforce` | `false` | Whether an unanswered quiz holds the merge. |
 | `exemptPaths` | `[]` | Globs never quizzed about, on top of the built-in generated-file set. |
 | `exemptReviewers` | `[]` | Logins never quizzed. Bots always are. |
@@ -46,6 +48,7 @@ What never blocks: a check LGTM concluded `neutral`. Every LGTM-side problem —
 npm install
 cp .env.example .env      # fill in APP_ID, PRIVATE_KEY, WEBHOOK_SECRET
                           # LGTM_SEAL_KEY: openssl rand -base64 32
+                          # ANTHROPIC_API_KEY: required to generate questions
 npm run dev
 ```
 
@@ -56,13 +59,26 @@ Register the app from [`app.yml`](app.yml) — it declares the permission set: r
 ## Other commands
 
 ```sh
-npm test        # 37 tests, no network
+npm test        # 89 tests, no network
 npm run demo    # prints the comment at each state of the flow
 npm run typecheck
 ```
 
+## How questions are generated
+
+`src/questions.ts` screens the file list first — too many files, all-generated, all-exempt — so the common skip costs nothing. Then `src/generator.ts` runs three stages on the diff:
+
+1. **Propose** — one call reads the hunks and writes candidates about what the change *does*: what a new guard prevents, which edit touches existing rows, what an error path now returns. It's told explicitly not to ask statistics, naming, or formatting questions.
+2. **Verify** — each candidate goes to an independent call that never saw the proposer's reasoning and is told to *refute* it. A candidate survives only if that call agrees the answer is right, the question is answerable from the diff alone, and someone who skipped the diff couldn't guess it.
+3. **Ground** — the cited `file` + `@@` hunk is checked against the parsed diff in code (`src/diff.ts`), and the options are checked for structural tells (a correct answer much longer than its distractors).
+
+Everything is conservative in one direction. A candidate that can't be confirmed is dropped, and a quiz with no survivors isn't posted — the check concludes neutral. Asking nothing is fine; asking something wrong fails a reviewer who did their job, which is the one failure this tool can't recover from.
+
 ## Status
 
-Spec plus a working prototype of the answer loop. The questions are a **placeholder** generator built from file statistics (`src/questions.ts`) — deterministic and grounded, but not the real thing. The model-backed generator is the next piece.
+Spec plus a working prototype. Two things are known-incomplete:
+
+- **No queue.** Generation runs outside the acknowledged webhook (`deferred()` in `src/app.ts`) so GitHub's 10s budget is met, but there's no durability — a restart mid-generation loses the work with no retry. Spec FR-002 wants a real worker.
+- **The checkbox question is unsettled.** See below.
 
 The prototype exists to settle one question against a live installation: **can a reviewer actually tick a checkbox in a comment the app authored?** Toggling a task list in a comment appears to require permission to edit that comment, which collaborators have and outside contributors may not. If that holds, the checkbox flow silently excludes outside contributors and the letter-reply path becomes the primary input rather than the fallback. `src/app.ts` logs `author_association` on every edit so the answer is visible in the logs.

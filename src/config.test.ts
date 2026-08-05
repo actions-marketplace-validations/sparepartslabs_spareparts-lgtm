@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { DEFAULTS, matchesAny, parseConfig } from './config.ts';
-import { generate, type PrFile } from './questions.ts';
+import { MAX_FILES, screen, type PrFile } from './questions.ts';
 import { collect, linksIn, renderReading } from './reading.ts';
 
 // --- config ----------------------------------------------------------------
@@ -63,7 +63,7 @@ test('path globs match across directories', () => {
   assert.ok(!matchesAny('src/quiz.ts', ['**/dist/**']));
 });
 
-// --- generation ------------------------------------------------------------
+// --- screening ------------------------------------------------------------
 
 const FILES: PrFile[] = [
   { filename: 'src/billing/charge.ts', additions: 40, deletions: 2, status: 'modified' },
@@ -73,80 +73,49 @@ const FILES: PrFile[] = [
   { filename: 'package-lock.json', additions: 900, deletions: 400, status: 'modified' },
 ];
 
-test('the question count follows the config', () => {
-  for (const n of [1, 2, 3]) {
-    const result = generate(FILES, { ...DEFAULTS, questions: n });
-    assert.equal(result.kind, 'ok');
-    if (result.kind !== 'ok') return;
-    assert.equal(result.quiz.questions.length, n);
-  }
+test('a normal PR passes the screen', () => {
+  assert.equal(screen(FILES, DEFAULTS).kind, 'ok');
 });
 
-test('raising the count deepens the quiz rather than reshuffling it', () => {
-  const two = generate(FILES, { ...DEFAULTS, questions: 2 });
-  const three = generate(FILES, { ...DEFAULTS, questions: 3 });
-  assert.equal(two.kind, 'ok');
-  assert.equal(three.kind, 'ok');
-  if (two.kind !== 'ok' || three.kind !== 'ok') return;
-  assert.deepEqual(
-    three.quiz.questions.slice(0, 2).map((q) => q.id),
-    two.quiz.questions.map((q) => q.id),
-  );
-});
-
-test('lockfiles are never quizzed about', () => {
-  const result = generate(FILES, DEFAULTS);
-  assert.equal(result.kind, 'ok');
-  if (result.kind !== 'ok') return;
-  const everyOption = result.quiz.questions.flatMap((q) => q.options);
-  assert.ok(!everyOption.includes('package-lock.json'));
-});
-
-test('a PR of only generated files is skipped, not quizzed', () => {
-  const result = generate(
+test('lockfiles alone are skipped', () => {
+  const result = screen(
     [{ filename: 'package-lock.json', additions: 900, deletions: 4, status: 'modified' }],
+    DEFAULTS,
+  );
+  assert.equal(result.kind, 'skip');
+  assert.match(result.kind === 'skip' ? result.reason : '', /generated or exempt/);
+});
+
+test('exempt paths can empty a PR', () => {
+  const result = screen(
+    [{ filename: 'docs/billing.md', additions: 8, deletions: 1, status: 'modified' }],
+    { ...DEFAULTS, exemptPaths: ['docs/**'] },
+  );
+  assert.equal(result.kind, 'skip');
+});
+
+test('an enormous PR is skipped before any model call', () => {
+  const many = Array.from({ length: MAX_FILES + 1 }, (_, i) => ({
+    filename: `src/f${i}.ts`,
+    additions: 5,
+    deletions: 0,
+    status: 'modified',
+  }));
+  const result = screen(many, DEFAULTS);
+  assert.equal(result.kind, 'skip');
+  assert.match(result.kind === 'skip' ? result.reason : '', /too large/);
+});
+
+test('a PR that changes no lines is skipped', () => {
+  const result = screen(
+    [{ filename: 'src/a.ts', additions: 0, deletions: 0, status: 'renamed' }],
     DEFAULTS,
   );
   assert.equal(result.kind, 'skip');
 });
 
-test('exempt paths are honoured', () => {
-  const result = generate(FILES, { ...DEFAULTS, exemptPaths: ['docs/**'] });
-  assert.equal(result.kind, 'ok');
-  if (result.kind !== 'ok') return;
-  assert.ok(!result.quiz.questions.flatMap((q) => q.options).includes('docs/billing.md'));
-});
-
-test('hard picks nearer distractors than easy', () => {
-  const hard = generate(FILES, { ...DEFAULTS, difficulty: 'hard', questions: 1 });
-  const easy = generate(FILES, { ...DEFAULTS, difficulty: 'easy', questions: 1 });
-  assert.equal(hard.kind, 'ok');
-  assert.equal(easy.kind, 'ok');
-  if (hard.kind !== 'ok' || easy.kind !== 'ok') return;
-
-  const sameDir = (opts: string[]) =>
-    opts.filter((o) => o.startsWith('src/billing/')).length;
-
-  assert.ok(
-    sameDir(hard.quiz.questions[0].options) > sameDir(easy.quiz.questions[0].options),
-    'hard distractors should sit closer to the answer',
-  );
-});
-
-test('difficulty never changes which option is correct', () => {
-  for (const difficulty of ['easy', 'medium', 'hard'] as const) {
-    const result = generate(FILES, { ...DEFAULTS, difficulty, questions: 1 });
-    assert.equal(result.kind, 'ok');
-    if (result.kind !== 'ok') return;
-    const q = result.quiz.questions[0];
-    assert.equal(q.options[result.quiz.correct[0]], 'src/billing/charge.ts');
-  }
-});
-
-test('generation is deterministic for an unchanged diff', () => {
-  const a = generate(FILES, DEFAULTS);
-  const b = generate(FILES, DEFAULTS);
-  assert.deepEqual(a, b);
+test('an empty diff is skipped', () => {
+  assert.equal(screen([], DEFAULTS).kind, 'skip');
 });
 
 // --- reading ---------------------------------------------------------------

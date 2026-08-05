@@ -1,14 +1,18 @@
 /**
  * The Probot app.
  *
- * Deliberately small: this exists to answer one question against a live
- * installation — can the reviewer actually tick a checkbox in a comment the app
- * authored? — and everything else is scaffolding around that probe.
+ * What is real: event routing, the sealed comment, grading, the check run, and
+ * question generation (`generator.ts` — propose, verify, ground).
  *
- * What is real here: the event routing, the sealed comment, grading, and the
- * check run. What is a placeholder: the questions (see `questions.ts`) and the
- * queue (spec FR-002 puts model work in a worker; with no model in the path the
- * handler finishes well inside GitHub's timeout).
+ * What is NOT real yet: the queue. Spec FR-002 puts model work in a worker
+ * because GitHub wants a webhook acknowledged in ten seconds and generation —
+ * one proposal call plus one verification call per candidate — takes far
+ * longer. Until that worker exists, `deferred()` below runs the work outside
+ * the acknowledged request. That keeps GitHub happy and is fine for a
+ * single-process prototype, but it is not durable: a restart mid-generation
+ * loses the work silently, and nothing retries it. The check is created
+ * *before* the work starts precisely so that failure is visible rather than
+ * invisible.
  */
 
 import Anthropic from '@anthropic-ai/sdk';
@@ -21,7 +25,8 @@ import {
   MAX_CONCEPTS,
 } from './concepts.ts';
 import { DEFAULTS, parseConfig, type Config } from './config.ts';
-import { generate } from './questions.ts';
+import { generateFromDiff, type GenerateResult } from './generator.ts';
+import { screen } from './questions.ts';
 import { collect, renderReading } from './reading.ts';
 import {
   looksLikeQuiz,
@@ -57,6 +62,19 @@ function sealKey(): string {
  * and is what the helpers actually need.
  */
 type AnyContext = Context;
+
+/**
+ * Run work outside the acknowledged webhook request.
+ *
+ * The stand-in for FR-002's worker. Deliberately loud on failure: without a
+ * queue there is no retry and no dead-letter, so an error that only reached a
+ * dropped promise would be a quiz that silently never appeared.
+ */
+function deferred(context: AnyContext, work: () => Promise<void>): void {
+  void work().catch((err) => {
+    context.log.error({ err }, 'deferred work failed — no retry exists');
+  });
+}
 
 /**
  * Config from the base branch (spec FR-028), never the head. `context.config`
@@ -97,12 +115,45 @@ async function quizFor(
   prNumber: number,
   config: Config,
 ): Promise<GeneratedQuiz | null> {
+  const result = await buildQuiz(context, prNumber, config);
+  return result.kind === 'ok' ? result.quiz : null;
+}
+
+/**
+ * The generation path: pre-filter cheaply on the file list, then generate and
+ * verify from the diff.
+ *
+ * The file-list pass runs first because it decides the cases where asking is
+ * wrong regardless of what a model would say — a 4,000-file dependency bump, a
+ * PR of nothing but lockfiles — and settling those without a model call keeps
+ * the common skip fast and free.
+ */
+async function buildQuiz(
+  context: AnyContext,
+  prNumber: number,
+  config: Config,
+): Promise<GenerateResult> {
   const files = await context.octokit.paginate(
     context.octokit.rest.pulls.listFiles,
     { ...context.repo(), pull_number: prNumber, per_page: 100 },
   );
-  const result = generate(files, config);
-  return result.kind === 'ok' ? result.quiz : null;
+
+  const prefilter = screen(files, config);
+  if (prefilter.kind === 'skip') return prefilter;
+
+  if (!process.env.ANTHROPIC_API_KEY) {
+    // Neutral, not pending and not a crash: an unconfigured install must not
+    // hold a merge (spec FR-025).
+    return { kind: 'skip', reason: 'Question generation is not configured.' };
+  }
+
+  const { data: diff } = await context.octokit.rest.pulls.get({
+    ...context.repo(),
+    pull_number: prNumber,
+    mediaType: { format: 'diff' },
+  });
+
+  return generateFromDiff(new Anthropic(), String(diff), config);
 }
 
 /**
@@ -292,6 +343,10 @@ export default function app(probot: Probot) {
     if (config.exemptReviewers.includes(reviewer)) return;
 
     const head = pr.head.sha;
+
+    // Generation is one proposal call plus a verification call per candidate —
+    // far past GitHub's ten-second webhook budget. Acknowledge now, work after.
+    deferred(context, async () => {
     const files = await context.octokit.paginate(
       context.octokit.rest.pulls.listFiles,
       { ...context.repo(), pull_number: pr.number, per_page: 100 },
@@ -302,7 +357,7 @@ export default function app(probot: Probot) {
       ? `\n\nConfig notes: ${problems.join(' ')}`
       : '';
 
-    const result = generate(files, config);
+    const result = await buildQuiz(context, pr.number, config);
     if (result.kind === 'skip') {
       // Neutral, never failure: LGTM having nothing to ask must not gate a
       // merge (spec FR-025).
@@ -368,6 +423,7 @@ export default function app(probot: Probot) {
             'hold the merge.') +
         footnote,
     );
+    });
   });
 
   probot.on('issue_comment.edited', async (context) => {
