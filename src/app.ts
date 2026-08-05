@@ -56,8 +56,28 @@ const ANSWER_COOLDOWN_MS = 60 * 60 * 1000;
  * In-memory, so it resets on restart. That is the wrong direction for a limit
  * — a crash loop would let the cooldown be bypassed indefinitely — and is
  * acceptable only until FR-002's worker gives this somewhere durable to live.
+ *
+ * Entries are evicted by `sweep` rather than expiring on their own, because a
+ * Map holds every key it is ever given: a long-lived process answering across
+ * many pull requests would otherwise accumulate one entry per asker per PR and
+ * never release a single one.
  */
 const recentAnswers = new Map<string, number>();
+
+/**
+ * Drop entries whose cooldown has already elapsed.
+ *
+ * This cannot change who gets an answer. An entry older than the cooldown
+ * already fails the freshness check below, so removing it produces the same
+ * decision it would have produced by being read — the sweep is about memory,
+ * not about policy. Keep that true: an eviction rule that outlived the
+ * cooldown would start silently granting answers the limit meant to withhold.
+ */
+function sweep(now: number): void {
+  for (const [key, at] of recentAnswers) {
+    if (now - at >= ANSWER_COOLDOWN_MS) recentAnswers.delete(key);
+  }
+}
 
 function sealKey(): string {
   const key = process.env.LGTM_SEAL_KEY;
@@ -267,13 +287,16 @@ async function handleMention(
   // ask, not how often — a maintainer in a loop with the bot is still a model
   // call per comment. Keyed on the asker rather than the PR so two reviewers
   // working the same PR never throttle each other.
+  const now = Date.now();
+  sweep(now);
+
   const bucket = `${context.repo().owner}/${context.repo().repo}#${issue.number}:${sender.login}`;
   const last = recentAnswers.get(bucket);
-  if (last !== undefined && Date.now() - last < ANSWER_COOLDOWN_MS) {
+  if (last !== undefined && now - last < ANSWER_COOLDOWN_MS) {
     context.log.info({ bucket }, 'mention within cooldown');
     return;
   }
-  recentAnswers.set(bucket, Date.now());
+  recentAnswers.set(bucket, now);
 
   // Acknowledge before the model call — a question that takes 20 seconds to
   // answer reads as a bot that ignored you.
