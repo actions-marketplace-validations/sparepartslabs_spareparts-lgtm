@@ -47,7 +47,7 @@ import {
   onHeadMoved,
   onQuizCommentEdited,
   onReviewSubmitted,
-} from './app.ts';
+} from './handlers.ts';
 
 /**
  * The slice of Probot's `Context` the handlers actually use. Assembling it by

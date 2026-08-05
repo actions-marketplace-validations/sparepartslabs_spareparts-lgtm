@@ -6,9 +6,10 @@ Not a code reviewer. It has no opinion on whether the change is good — only on
 
 ## Shape
 
-- Webhook handler → worker. **No database**: quiz state lives in the comment and the check run, configuration in `.github/lgtm.yml`.
+- A **GitHub Action** — two workflow files, two secrets, no server. Each repo supplies its own model key, so adoption costs the adopter.
+- **No database**: quiz state lives in the comment and the check run, configuration in `.github/lgtm.yml`.
 - The answer key is never published. The comment carries a keyed hash per correct option, authenticated so an edited quiz is reissued rather than graded.
-- The shared Spare Parts API (`api.sparepartslabs.com`, `client_id` `lgtm`) is for the dashboard only. The quiz loop does not depend on it.
+- Approvals reach privileged code by relay, because `pull_request_review` gets no secrets on a fork PR. The relay artifact is treated as untrusted.
 
 Spec: [`specs/001-lgtm-backend/spec.md`](specs/001-lgtm-backend/spec.md).
 
