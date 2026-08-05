@@ -1,0 +1,20 @@
+{
+  "name": "lgtm",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --import tsx --test src/*.test.ts",
+    "demo": "node --import tsx src/demo.ts",
+    "dev": "node --import tsx --env-file=.env src/server.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^20",
+    "tsx": "^4.21.0",
+    "typescript": "^5"
+  },
+  "dependencies": {
+    "probot": "^14.3.2"
+  }
+}

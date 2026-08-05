@@ -1,0 +1,394 @@
+/**
+ * The Probot app.
+ *
+ * Deliberately small: this exists to answer one question against a live
+ * installation — can the reviewer actually tick a checkbox in a comment the app
+ * authored? — and everything else is scaffolding around that probe.
+ *
+ * What is real here: the event routing, the sealed comment, grading, and the
+ * check run. What is a placeholder: the questions (see `questions.ts`) and the
+ * queue (spec FR-002 puts model work in a worker; with no model in the path the
+ * handler finishes well inside GitHub's timeout).
+ */
+
+import type { Probot, Context } from 'probot';
+
+import { DEFAULTS, parseConfig, type Config } from './config.ts';
+import { generate } from './questions.ts';
+import { collect, renderReading } from './reading.ts';
+import {
+  looksLikeQuiz,
+  onCommentEdited,
+  openSeal,
+  renderConfirmed,
+  renderFlagged,
+  renderQuiz,
+  revisitNote,
+  parseAnswers,
+  type GeneratedQuiz,
+} from './quiz.ts';
+
+const CHECK_NAME = 'LGTM — review confirmed';
+
+function sealKey(): string {
+  const key = process.env.LGTM_SEAL_KEY;
+  if (!key) throw new Error('LGTM_SEAL_KEY is not set');
+  return key;
+}
+
+/**
+ * The shared helpers below only ever touch `octokit`, `repo()`, and `log`, and
+ * the union of two concrete event contexts is more type than TS will represent
+ * at those property accesses. The un-parameterised `Context` covers all events
+ * and is what the helpers actually need.
+ */
+type AnyContext = Context;
+
+/**
+ * Config from the base branch (spec FR-028), never the head. `context.config`
+ * reads the default branch, which is the right ref for everything except a PR
+ * that targets a non-default base — noted as a gap rather than papered over.
+ */
+async function loadConfig(
+  context: AnyContext,
+): Promise<{ config: Config; problems: string[] }> {
+  try {
+    const { owner, repo } = context.repo();
+    // Cast: the config plugin's return type is generic over the shape it reads,
+    // and unioning it across two event contexts exceeds what TS will represent.
+    // `parseConfig` validates the value anyway, so nothing is lost.
+    const octokit = context.octokit as unknown as {
+      config: { get(args: unknown): Promise<{ config: unknown }> };
+    };
+    const raw = await octokit.config.get({
+      owner,
+      repo,
+      path: '.github/lgtm.yml',
+    });
+    return parseConfig(raw.config);
+  } catch (err) {
+    context.log.warn({ err }, 'could not read config — using defaults');
+    return { config: DEFAULTS, problems: ['Could not read `.github/lgtm.yml`.'] };
+  }
+}
+
+/**
+ * Regenerating from the file list is deterministic, so the grader can rebuild
+ * the question text it needs for a revisit note without having stored it. The
+ * real generator is not deterministic, which is why the seal carries the
+ * hashes rather than relying on this — this is only for re-rendering prose.
+ */
+async function quizFor(
+  context: AnyContext,
+  prNumber: number,
+  config: Config,
+): Promise<GeneratedQuiz | null> {
+  const files = await context.octokit.paginate(
+    context.octokit.rest.pulls.listFiles,
+    { ...context.repo(), pull_number: prNumber, per_page: 100 },
+  );
+  const result = generate(files, config);
+  return result.kind === 'ok' ? result.quiz : null;
+}
+
+/**
+ * How the check blocks, and how it deliberately doesn't.
+ *
+ * GitHub gives a required check three useful outcomes, and each carries a
+ * different promise here:
+ *
+ *   `in_progress` — blocks merge while it lasts. This is the *only* thing that
+ *     blocks, and it means exactly one thing: a person owes an answer.
+ *   `neutral`     — satisfies a required check. Every LGTM-side problem lands
+ *     here, so being broken can never freeze a repo (spec FR-025).
+ *   `success`     — answered, or waived.
+ *
+ * `failure` is never used. It is the only conclusion that would put a red X
+ * next to a reviewer's name for not having answered yet, and the whole tool is
+ * built on that not happening.
+ */
+type Outcome = 'success' | 'neutral' | 'waiting';
+
+async function setCheck(
+  context: AnyContext,
+  head: string,
+  outcome: Outcome,
+  title: string,
+  summary: string,
+) {
+  await context.octokit.rest.checks.create({
+    ...context.repo(),
+    name: CHECK_NAME,
+    head_sha: head,
+    status: outcome === 'waiting' ? 'in_progress' : 'completed',
+    ...(outcome === 'waiting' ? {} : { conclusion: outcome }),
+    output: { title, summary },
+  });
+}
+
+/**
+ * What to report while the reviewer still owes an answer.
+ *
+ * With enforcement off this is `neutral` — the quiz is posted and the check is
+ * informational, so a repo trying LGTM out is never blocked by it (User Story
+ * 1). With enforcement on it stays `in_progress`, which is what holds the merge
+ * button. Nothing else in the app distinguishes the two modes.
+ */
+function pendingOutcome(config: Config): Outcome {
+  return config.enforce ? 'waiting' : 'neutral';
+}
+
+const WAIVE_RE = /^\s*\/lgtm\s+waive\b/im;
+
+/**
+ * Who may waive. `author_association` is GitHub's own answer to "what standing
+ * does this person have here", and OWNER/MEMBER/COLLABORATOR is exactly the set
+ * that can already merge. Anyone who can merge can waive; nobody else can.
+ */
+const CAN_WAIVE = new Set(['OWNER', 'MEMBER', 'COLLABORATOR']);
+
+export default function app(probot: Probot) {
+  probot.on('pull_request_review.submitted', async (context) => {
+    const { review, pull_request: pr } = context.payload;
+
+    if (review.state !== 'approved') return;
+    if (!review.user || !pr.user) return;
+    if (review.user.type === 'Bot') return;
+    if (review.user.login === pr.user.login) return; // They wrote it.
+
+    const { config, problems } = await loadConfig(context);
+    const reviewer = review.user.login;
+
+    if (config.exemptReviewers.includes(reviewer)) return;
+
+    const head = pr.head.sha;
+    const files = await context.octokit.paginate(
+      context.octokit.rest.pulls.listFiles,
+      { ...context.repo(), pull_number: pr.number, per_page: 100 },
+    );
+
+    // A config problem is reported but never fatal: defaults already applied.
+    const footnote = problems.length
+      ? `\n\nConfig notes: ${problems.join(' ')}`
+      : '';
+
+    const result = generate(files, config);
+    if (result.kind === 'skip') {
+      // Neutral, never failure: LGTM having nothing to ask must not gate a
+      // merge (spec FR-025).
+      await setCheck(
+        context,
+        head,
+        'neutral',
+        'No quiz for this one',
+        result.reason + footnote,
+      );
+      return;
+    }
+
+    const reading = config.surfaceReading
+      ? renderReading(
+          collect({
+            files,
+            prBody: pr.body,
+            repo: { owner: context.repo().owner, repo: context.repo().repo, ref: head },
+          }),
+        )
+      : null;
+
+    const body = renderQuiz(
+      sealKey(),
+      result.quiz,
+      { pr: pr.number, head, reviewer },
+      { reading },
+    );
+
+    const comment = await context.octokit.rest.issues.createComment({
+      ...context.repo(),
+      issue_number: pr.number,
+      body,
+    });
+
+    // The probe. `author_association` on the edit event tells us what standing
+    // the ticker had, which is exactly what decides whether checkboxes are a
+    // viable input for outside contributors.
+    context.log.info(
+      { comment: comment.data.id, reviewer, head, difficulty: config.difficulty },
+      'posted quiz',
+    );
+
+    await setCheck(
+      context,
+      head,
+      pendingOutcome(config),
+      'Waiting on the reviewer',
+      `Asked @${reviewer} ${result.quiz.questions.length} question(s) at ` +
+        `${config.difficulty} difficulty.\n\n` +
+        (config.enforce
+          ? 'Merging is held until this is answered. Anyone who can merge can ' +
+            'release it by commenting `/lgtm waive`.'
+          : 'Enforcement is off, so this check is informational — it will not ' +
+            'hold the merge.') +
+        footnote,
+    );
+  });
+
+  probot.on('issue_comment.edited', async (context) => {
+    const { comment, sender, issue } = context.payload;
+
+    if (!looksLikeQuiz(comment.body)) return;
+
+    // Log every edit of one of our comments before deciding anything, because
+    // the absence of these lines is itself the finding: if an outside
+    // contributor cannot tick, no event arrives at all.
+    context.log.info(
+      {
+        sender: sender.login,
+        author_association: context.payload.comment.author_association,
+        comment: comment.id,
+      },
+      'edit on a quiz comment',
+    );
+
+    const action = onCommentEdited(sealKey(), {
+      body: comment.body,
+      sender: sender.login,
+      commentAuthorIsApp: comment.user?.type === 'Bot',
+    });
+
+    if (action.kind === 'ignore' || action.kind === 'wait') {
+      context.log.info({ action }, 'no state change');
+      return;
+    }
+
+    const claims = openSeal(sealKey(), comment.body);
+    if (!claims && action.kind !== 'reissue') return;
+
+    if (action.kind === 'reissue') {
+      const parsed = parseAnswers(sealKey(), comment.body);
+      context.log.warn({ parsed: parsed.kind }, 'seal did not verify — reissuing');
+      const { config } = await loadConfig(context);
+      const quiz = await quizFor(context, issue.number, config);
+      if (!quiz) return;
+      // Nothing in the tampered body can be trusted, including the head it
+      // claims, so both the head and the reviewer are re-read from GitHub
+      // rather than from the comment.
+      const { data: pr } = await context.octokit.rest.pulls.get({
+        ...context.repo(),
+        pull_number: issue.number,
+      });
+      await context.octokit.rest.issues.updateComment({
+        ...context.repo(),
+        comment_id: comment.id,
+        body: renderQuiz(sealKey(), quiz, {
+          pr: issue.number,
+          head: pr.head.sha,
+          reviewer: sender.login,
+        }),
+      });
+      return;
+    }
+
+    if (!claims) return;
+
+    if (action.kind === 'confirm' || action.kind === 'flagged') {
+      await context.octokit.rest.issues.updateComment({
+        ...context.repo(),
+        comment_id: comment.id,
+        body:
+          action.kind === 'confirm'
+            ? renderConfirmed(claims.reviewer)
+            : renderFlagged(claims.reviewer),
+      });
+      await setCheck(
+        context,
+        claims.head,
+        'success',
+        action.kind === 'confirm' ? 'Confirmed' : 'Confirmed (question flagged)',
+        `@${claims.reviewer} confirmed this review.`,
+      );
+      return;
+    }
+
+    if (action.kind === 'revisit') {
+      const { config } = await loadConfig(context);
+      const quiz = await quizFor(context, issue.number, config);
+      if (!quiz) return;
+      const parsed = parseAnswers(sealKey(), comment.body);
+      await context.octokit.rest.issues.updateComment({
+        ...context.repo(),
+        comment_id: comment.id,
+        body: renderQuiz(
+          sealKey(),
+          quiz,
+          { pr: claims.pr, head: claims.head, reviewer: claims.reviewer },
+          {
+            selections: parsed.kind === 'ok' ? parsed.selections : undefined,
+            note: revisitNote(quiz, action.wrong),
+          },
+        ),
+      });
+    }
+  });
+
+  /**
+   * `/lgtm waive` — the exit. With enforcement on, a reviewer who cannot answer
+   * (a bad question, an emergency, a diff LGTM misjudged) must never be able to
+   * strand a PR, so anyone who could have merged it anyway can release it.
+   */
+  probot.on('issue_comment.created', async (context) => {
+    const { comment, issue, sender } = context.payload;
+
+    if (!issue.pull_request) return;
+    if (!WAIVE_RE.test(comment.body)) return;
+
+    if (!CAN_WAIVE.has(comment.author_association)) {
+      await context.octokit.rest.issues.createComment({
+        ...context.repo(),
+        issue_number: issue.number,
+        body:
+          `@${sender.login} only someone who can merge this PR can waive the ` +
+          `review check — asking a maintainer is the way through.`,
+      });
+      return;
+    }
+
+    const { data: pr } = await context.octokit.rest.pulls.get({
+      ...context.repo(),
+      pull_number: issue.number,
+    });
+
+    // Waivers are recorded in the thread, which is the audit trail (spec
+    // FR-026). Nothing is written on LGTM's side.
+    await setCheck(
+      context,
+      pr.head.sha,
+      'success',
+      'Waived',
+      `Waived by @${sender.login}.`,
+    );
+
+    await context.octokit.rest.reactions.createForIssueComment({
+      ...context.repo(),
+      comment_id: comment.id,
+      content: '+1',
+    });
+
+    context.log.info(
+      { waivedBy: sender.login, pr: issue.number, head: pr.head.sha },
+      'waived',
+    );
+  });
+
+  /**
+   * A confirmation is bound to the commit it was answered against (FR-027), so
+   * a new head starts with no check at all. With enforcement on that is exactly
+   * right: no check means the required check is missing, which blocks until the
+   * next approval produces one.
+   */
+  probot.on('pull_request.synchronize', async (context) => {
+    // A confirmation is bound to the commit it was answered against (FR-027).
+    // The new head simply has no check yet; nothing to undo.
+    context.log.info({ head: context.payload.pull_request.head.sha }, 'head moved');
+  });
+}

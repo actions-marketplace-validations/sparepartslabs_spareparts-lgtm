@@ -1,0 +1,20 @@
+# GitHub App manifest. The narrowest permission set that supports the feature
+# (spec FR-004) — read what the quiz is about, write only the check run and the
+# comment that carries it.
+name: LGTM
+description: >-
+  Asks the reviewer two or three questions about the PR they just approved.
+  Not a code reviewer — it has no opinion on the change, only on whether
+  anyone read it.
+public: false
+
+default_permissions:
+  pull_requests: read
+  contents: read
+  checks: write
+  issues: write # issue comments on PRs live under the issues API
+
+default_events:
+  - pull_request_review
+  - issue_comment
+  - pull_request

@@ -1,0 +1,25 @@
+# LGTM's own configuration, and the documented example.
+# Every field is optional; these are the defaults.
+
+# How many questions to ask. 1–5.
+questions: 2
+
+# easy   — distractors are obviously unrelated
+# medium — distractors are true about the diff but don't answer the question
+# hard   — distractors are the plausible misreading
+difficulty: medium
+
+# List the docs and links a reviewer needs, above the questions.
+surfaceReading: true
+
+# Off means the check is reported but never holds a merge. Turning it on also
+# requires marking "LGTM — review confirmed" as a required check in branch
+# protection — LGTM cannot and will not do that for you.
+enforce: false
+
+# Never quizzed about. Generated files (lockfiles, dist/, snapshots) are
+# already excluded without being listed.
+exemptPaths: []
+
+# Never quizzed. Bots are always exempt regardless.
+exemptReviewers: []
