@@ -277,11 +277,20 @@ async function handleMention(
 
   // Acknowledge before the model call — a question that takes 20 seconds to
   // answer reads as a bot that ignored you.
-  await context.octokit.rest.reactions.createForIssueComment({
-    ...context.repo(),
-    comment_id: comment.id,
-    content: 'eyes',
-  });
+  //
+  // Never fatal. This is a cosmetic emoji, and it once took down the whole
+  // answer path: reactions on a PR comment need `pull-requests: write`, the
+  // 403 escaped, and the question went unanswered because the acknowledgement
+  // failed. Decoration must not be able to break the thing it decorates.
+  try {
+    await context.octokit.rest.reactions.createForIssueComment({
+      ...context.repo(),
+      comment_id: comment.id,
+      content: 'eyes',
+    });
+  } catch (err) {
+    context.log.warn({ err }, 'could not acknowledge — answering anyway');
+  }
 
   try {
     const { data: diff } = await context.octokit.rest.pulls.get({

@@ -29,7 +29,7 @@ permissions:
   contents: read # check out this repo (never the fork)
   checks: write # post the review-confirmed check
   issues: write # the quiz comment, replies, reactions
-  pull-requests: read # read the diff
+  pull-requests: write # read the diff; react to and reply on PR comments
   actions: read # download the relayed event artifact
 
 jobs:
