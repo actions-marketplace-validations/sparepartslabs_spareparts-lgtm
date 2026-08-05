@@ -207,37 +207,26 @@ function escape(s: string): string {
 }
 
 /**
- * Who this PR's reviewers are.
+ * Does this commenter have write access, per GitHub's `author_association`?
  *
- * `requested` is GitHub's requested-reviewer list; `reviewed` is everyone who
- * has actually submitted a review — including reviews that were dismissed or
- * left as comments, since asking a question is part of reviewing, not a
- * privilege earned by approving.
+ * Used to gate both the question path (a model call per comment, and on a
+ * public repo anyone can comment) and the waiver. It rides on the webhook
+ * payload, so it costs no API call and doesn't depend on whether the asker has
+ * been added to the reviewer list yet — a maintainer who wanders into a PR to
+ * help can ask immediately.
+ *
+ * Caveat inherited from GitHub: `MEMBER` means "member of the owning
+ * organisation", which is not strictly write access on this repository. It is
+ * the closest signal the payload carries.
+ *
+ * Anything unrecognised is refused. `author_association` also carries
+ * CONTRIBUTOR, FIRST_TIME_CONTRIBUTOR, MANNEQUIN, and NONE, and a value this
+ * set doesn't name must not be read as permission.
  */
-export interface ReviewerSet {
-  requested: string[];
-  reviewed: string[];
-}
-
-/**
- * May this person ask?
- *
- * The gate exists because the question path costs a model call per comment, and
- * on a public repo anyone can comment. Scoping it to the people actually
- * reviewing bounds that without a rate limit that would also throttle a
- * legitimate back-and-forth.
- *
- * GitHub logins are case-insensitive, so the comparison is too — a mention from
- * `Alice` must match a requested reviewer recorded as `alice`.
- *
- * The cost of this gate: someone reviewing a PR they were never assigned — the
- * common case on open source — is not a reviewer by this definition until they
- * submit something. That is a real exclusion, and the reason a refusal here is
- * silent rather than a comment telling them they may not ask.
- */
-export function isReviewer(set: ReviewerSet, login: string): boolean {
-  const who = login.toLowerCase();
-  return [...set.requested, ...set.reviewed].some((r) => r.toLowerCase() === who);
+export function hasWriteAccess(association: string): boolean {
+  return association === 'OWNER' ||
+    association === 'MEMBER' ||
+    association === 'COLLABORATOR';
 }
 
 export function renderAnswer(asker: string, answer: Answer): string | null {

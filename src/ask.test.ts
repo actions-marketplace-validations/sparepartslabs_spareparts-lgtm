@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 
 import {
   ask,
-  isReviewer,
+  hasWriteAccess,
   parseMention,
   renderAnswer,
   type Answer,
@@ -164,30 +164,24 @@ test('a decline explains why without scolding', () => {
   assert.doesNotMatch(body, /cannot|refuse|not allowed|won't help/i);
 });
 
-// --- the reviewer gate -----------------------------------------------------
+// --- the write-access gate -------------------------------------------------
 
-test('a requested reviewer may ask', () => {
-  assert.ok(isReviewer({ requested: ['alice'], reviewed: [] }, 'alice'));
+test('owners, org members, and collaborators may ask', () => {
+  for (const a of ['OWNER', 'MEMBER', 'COLLABORATOR']) {
+    assert.ok(hasWriteAccess(a), a);
+  }
 });
 
-test('someone who submitted a review may ask, requested or not', () => {
-  assert.ok(isReviewer({ requested: [], reviewed: ['bob'] }, 'bob'));
+test('everyone without write access is refused', () => {
+  for (const a of ['CONTRIBUTOR', 'FIRST_TIME_CONTRIBUTOR', 'FIRST_TIMER', 'MANNEQUIN', 'NONE']) {
+    assert.ok(!hasWriteAccess(a), a);
+  }
 });
 
-test('a drive-by commenter may not', () => {
-  assert.ok(!isReviewer({ requested: ['alice'], reviewed: ['bob'] }, 'mallory'));
-});
-
-test('nobody may ask on a PR with no reviewers', () => {
-  assert.ok(!isReviewer({ requested: [], reviewed: [] }, 'alice'));
-});
-
-test('login matching is case-insensitive, as GitHub logins are', () => {
-  assert.ok(isReviewer({ requested: ['Alice'], reviewed: [] }, 'alice'));
-  assert.ok(isReviewer({ requested: [], reviewed: ['bob'] }, 'BOB'));
-});
-
-test('a partial login is not a match', () => {
-  assert.ok(!isReviewer({ requested: ['alice-smith'], reviewed: [] }, 'alice'));
-  assert.ok(!isReviewer({ requested: ['alice'], reviewed: [] }, 'alice-smith'));
+test('an unrecognised association is refused, not assumed', () => {
+  // GitHub can add values; a name this predicate does not know must never be
+  // read as permission.
+  for (const a of ['', 'owner', 'Owner', 'ADMIN', 'TRIAGE', 'WRITE', 'undefined']) {
+    assert.ok(!hasWriteAccess(a), JSON.stringify(a));
+  }
 });

@@ -18,7 +18,7 @@
 import Anthropic from '@anthropic-ai/sdk';
 import type { Probot, Context } from 'probot';
 
-import { ask, isReviewer, parseMention, renderAnswer } from './ask.ts';
+import { ask, hasWriteAccess, parseMention, renderAnswer } from './ask.ts';
 import {
   explainConcepts,
   renderConcepts,
@@ -219,45 +219,6 @@ async function conceptsFor(
 }
 
 /**
- * Is this person reviewing this PR?
- *
- * Two lists: who was asked to review, and who has actually submitted one. On
- * an API failure this returns false — the gate fails closed, because the cost
- * of wrongly refusing is a question that goes unanswered, and the cost of
- * wrongly allowing is an unbounded model call per drive-by comment.
- */
-async function isPrReviewer(
-  context: AnyContext,
-  prNumber: number,
-  login: string,
-): Promise<boolean> {
-  try {
-    const [{ data: requested }, reviews] = await Promise.all([
-      context.octokit.rest.pulls.listRequestedReviewers({
-        ...context.repo(),
-        pull_number: prNumber,
-      }),
-      context.octokit.paginate(context.octokit.rest.pulls.listReviews, {
-        ...context.repo(),
-        pull_number: prNumber,
-        per_page: 100,
-      }),
-    ]);
-
-    return isReviewer(
-      {
-        requested: requested.users.map((u) => u.login),
-        reviewed: reviews.map((r) => r.user?.login).filter((l): l is string => !!l),
-      },
-      login,
-    );
-  } catch (err) {
-    context.log.warn({ err }, 'could not resolve reviewers — refusing to answer');
-    return false;
-  }
-}
-
-/**
  * A reviewer mentioned @lgtm. Answer background; decline to read the PR for
  * them (see `ask.ts` for why that distinction is the whole feature).
  */
@@ -278,12 +239,17 @@ async function handleMention(
   if (!config.answerQuestions) return;
   if (!process.env.ANTHROPIC_API_KEY) return;
 
-  // Reviewers only. Silently — a bot that publicly tells someone they may not
-  // ask is the policing tone this whole tool is built to avoid, and the person
-  // who typed the question is better served by a maintainer reading the log
-  // than by a refusal in the thread.
-  if (!(await isPrReviewer(context, issue.number, sender.login))) {
-    context.log.info({ sender: sender.login }, 'mention from a non-reviewer');
+  // Write access only, read straight off the event — no extra API call, and no
+  // dependence on whether the asker happens to be on the reviewer list yet.
+  //
+  // Silently: a bot that publicly tells someone they may not ask is the
+  // policing tone this tool is built to avoid, and it would fire on every
+  // drive-by. The reason goes to the log, where a maintainer sees it.
+  if (!hasWriteAccess(comment.author_association)) {
+    context.log.info(
+      { sender: sender.login, association: comment.author_association },
+      'mention from someone without write access',
+    );
     return;
   }
 
@@ -369,12 +335,6 @@ function pendingOutcome(config: Config): Outcome {
 
 const WAIVE_RE = /^\s*\/lgtm\s+waive\b/im;
 
-/**
- * Who may waive. `author_association` is GitHub's own answer to "what standing
- * does this person have here", and OWNER/MEMBER/COLLABORATOR is exactly the set
- * that can already merge. Anyone who can merge can waive; nobody else can.
- */
-const CAN_WAIVE = new Set(['OWNER', 'MEMBER', 'COLLABORATOR']);
 
 export default function app(probot: Probot) {
   probot.on('pull_request_review.submitted', async (context) => {
@@ -589,7 +549,7 @@ export default function app(probot: Probot) {
       return;
     }
 
-    if (!CAN_WAIVE.has(comment.author_association)) {
+    if (!hasWriteAccess(comment.author_association)) {
       await context.octokit.rest.issues.createComment({
         ...context.repo(),
         issue_number: issue.number,
