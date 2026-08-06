@@ -1,6 +1,6 @@
 # LGTM
 
-A GitHub App that asks the reviewer two or three questions about the PR they just approved, generated from the diff, and reports the result as a check run.
+A GitHub Action that asks the reviewer two or three questions about the PR they just approved, generated from the diff, and reports the result as a check run.
 
 Not a code reviewer. It has no opinion on whether the change is good — only on whether anyone read it. Friendly by design: it hands you the docs first, gives unlimited attempts, keeps no score, and can never mark a review as failed.
 
@@ -11,6 +11,88 @@ Not a code reviewer. It has no opinion on whether the change is good — only on
 - The answer key is never published. The comment carries a keyed hash per correct option, authenticated so an edited quiz is reissued rather than graded.
 - Approvals reach privileged code by relay, because `pull_request_review` gets no secrets on a fork PR. The relay artifact is treated as untrusted.
 
+## Install
+
+Two workflow files and two secrets. No checkout, no server, no database: the diff and the config are read through the API.
+
+`.github/workflows/lgtm-collect.yml` — the powerless half. On a fork PR, `pull_request_review` gets no secrets and a read-only token, so all this can do is hand the event on.
+
+```yaml
+name: LGTM (collect)
+on:
+  pull_request_review:
+    types: [submitted]
+permissions: {}
+jobs:
+  collect:
+    if: github.event.review.state == 'approved'
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          EVENT: ${{ toJSON(github.event) }}
+        run: |
+          mkdir -p relay
+          jq -n --arg name pull_request_review --argjson payload "$EVENT" \
+            '{event_name: $name, payload: $payload}' > relay/event.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lgtm-event
+          path: relay/event.json
+          retention-days: 1
+```
+
+`.github/workflows/lgtm.yml` — the privileged half.
+
+```yaml
+name: LGTM
+on:
+  workflow_run:
+    workflows: [LGTM (collect)]
+    types: [completed]
+  issue_comment:
+    types: [created, edited]
+
+permissions:
+  contents: read
+  checks: write
+  issues: write
+  pull-requests: write
+  actions: read
+
+jobs:
+  lgtm:
+    if: >
+      github.event_name == 'workflow_run' ||
+      (github.event.issue.pull_request != null &&
+       (contains(github.event.comment.body, 'lgtm:v1') ||
+        contains(github.event.comment.body, '/lgtm waive') ||
+        contains(github.event.comment.body, '@lgtm')))
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fetch the relayed event
+        if: github.event_name == 'workflow_run'
+        uses: actions/download-artifact@v4
+        with:
+          name: lgtm-event
+          path: relay
+          run-id: ${{ github.event.workflow_run.id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: sparepartslabs/spareparts-lgtm@v1
+        with:
+          anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
+          seal-key: ${{ secrets.LGTM_SEAL_KEY }}
+          relayed-event: ${{ github.event_name == 'workflow_run' && 'relay/event.json' || '' }}
+```
+
+Then two secrets:
+
+| Secret | |
+| --- | --- |
+| `ANTHROPIC_API_KEY` | Writes and verifies the questions, and is the only vendor that can produce the reading aids and answer `@lgtm`. `OPENAI_API_KEY` and `GEMINI_API_KEY` are inputs too; `provider:` picks between them. |
+| `LGTM_SEAL_KEY` | `openssl rand -base64 32`, stored once and kept stable. No fallback: unset is a startup failure rather than a quiz nobody can grade. |
+
+Every input is listed in [`action.yml`](action.yml).
 
 ## Configuration
 
@@ -42,26 +124,24 @@ With both on, an unanswered quiz leaves the check incomplete, which holds the me
 
 What never blocks: a check LGTM concluded `neutral`. Every LGTM-side problem — model failure, an unquizzable diff, a PR too large, an unreadable config — lands there, so LGTM being broken can't freeze a repo. A `failure` conclusion is never used at all.
 
-## Running it locally against a real repo
+## Development
 
 ```sh
-npm install
-cp .env.example .env      # fill in APP_ID, PRIVATE_KEY, WEBHOOK_SECRET
-                          # LGTM_SEAL_KEY: openssl rand -base64 32
-                          # ANTHROPIC_API_KEY: required to generate questions
-npm run dev
+npm ci
+npm test        # 119 tests, no network
+npm run typecheck
 ```
 
-Point the app's webhook URL at your machine (`npx smee-client --url <smee-url> --path /api/github/webhooks --port 3000`), install it on a scratch repo, and approve a PR.
+This repository runs the action on its own pull requests through `uses: ./`, so a change is exercised here before it is tagged for anyone else. Approve a PR and watch the run.
 
-Register the app from [`app.yml`](app.yml) — it declares the permission set: read on pull requests and contents, write on checks and issues.
-
-## Other commands
+To drive the entry point by hand, set the same variables `action.yml` sets and point it at an event payload:
 
 ```sh
-npm test        # 92 tests, no network
-npm run demo    # prints the comment at each state of the flow
-npm run typecheck
+GITHUB_REPOSITORY=owner/repo \
+GITHUB_EVENT_NAME=issue_comment \
+GITHUB_EVENT_PATH=./event.json \
+GITHUB_TOKEN=... LGTM_SEAL_KEY=... ANTHROPIC_API_KEY=... \
+npm run action
 ```
 
 ## How questions are generated
@@ -86,9 +166,6 @@ Everyone else is ignored silently. A bot that publicly tells someone they may no
 
 ## Status
 
-Spec plus a working prototype. Two things are known-incomplete:
+One thing is unsettled: **can an outside contributor tick a checkbox in a comment the bot authored?** Toggling a task list appears to require permission to edit that comment, which collaborators have and outside contributors may not. If that holds, the checkbox flow silently excludes them and the letter-reply path is the primary input rather than the fallback. `src/handlers.ts` logs `author_association` on every edit, so a live installation answers it in the log.
 
-- **No queue.** Generation runs outside the acknowledged webhook (`deferred()` in `src/app.ts`) so GitHub's 10s budget is met, but there's no durability — a restart mid-generation loses the work with no retry. Spec FR-002 wants a real worker.
-- **The checkbox question is unsettled.** See below.
-
-The prototype exists to settle one question against a live installation: **can a reviewer actually tick a checkbox in a comment the app authored?** Toggling a task list in a comment appears to require permission to edit that comment, which collaborators have and outside contributors may not. If that holds, the checkbox flow silently excludes outside contributors and the letter-reply path becomes the primary input rather than the fallback. `src/app.ts` logs `author_association` on every edit so the answer is visible in the logs.
+Generation is durable enough as an Action: a workflow has no ten-second acknowledgement budget, so it runs inline and a failure is a failed run you can re-run, not work lost in a background task.

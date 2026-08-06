@@ -48,14 +48,11 @@ jobs:
       # code. On the issue_comment path that is what GitHub gives us anyway; on
       # the workflow_run path it is the security property the whole design
       # rests on.
+      #
+      # Still needed even though the action below is published: `uses: ./` runs
+      # the action from this checkout, which is what dogfoods the same package
+      # every consumer gets. A consuming repository needs no checkout at all.
       - uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-
-      - run: npm ci --ignore-scripts
 
       - name: Fetch the relayed event
         if: github.event_name == 'workflow_run'
@@ -66,46 +63,19 @@ jobs:
           run-id: ${{ github.event.workflow_run.id }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
+      # `uses: ./` rather than `sparepartslabs/spareparts-lgtm@v1`: this repo
+      # runs the action as it stands on the default branch, so a change is
+      # exercised here before it is ever tagged for anyone else.
       - name: Run LGTM
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        uses: ./
+        with:
           # Whichever vendors this repo has set up. `provider:` in
           # .github/lgtm.yml picks between them, defaulting to Anthropic; a
           # provider named without its key is a neutral check, never a block.
-          #
-          # ANTHROPIC_API_KEY does double duty: default question vendor, AND
-          # the only vendor for the optional reading aids (`surfaceReading`,
-          # `webConcepts`) and @lgtm answers, because those need server-side
-          # web search rather than a plain structured call. A repo running
-          # `provider: openai` with no Anthropic key gets questions and
-          # silently gets no reading aids — documented degradation, not a
-          # failure.
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          # Signs the quiz seal so a tampered quiz is reissued rather than
-          # graded. NO FALLBACK, deliberately.
-          #
-          # This used to read `secrets.LGTM_SEAL_KEY || secrets.GITHUB_TOKEN`,
-          # and that fallback was silently fatal: GITHUB_TOKEN is regenerated
-          # every run, so a quiz sealed by one run could never be verified by
-          # the next. Every tick read as tampering and reissued a fresh quiz,
-          # so the questions changed underneath whoever was answering. It also
-          # defeated the guard in `sealKey()`, which can only fire when the
-          # variable is genuinely unset.
-          #
-          # Unset is now a loud startup failure, which is the correct outcome:
-          # a repo without this secret cannot grade anything, and should be
-          # told so rather than quietly looping.
-          LGTM_SEAL_KEY: ${{ secrets.LGTM_SEAL_KEY }}
-          # The handle that summons the bot — a trigger token, not an account.
-          # As an Action there is no `lgtm` user to mention: replies come from
-          # `github-actions[bot]`. Keeping the token `@lgtm` matches the docs
-          # and the job filter above, and reads better than `@github-actions`,
-          # which would also ping the real Actions bot. The don't-answer-
-          # ourselves guard keys on the commenter being a Bot, not on this.
-          LGTM_BOT_LOGIN: lgtm
+          anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
+          openai-api-key: ${{ secrets.OPENAI_API_KEY }}
+          gemini-api-key: ${{ secrets.GEMINI_API_KEY }}
+          seal-key: ${{ secrets.LGTM_SEAL_KEY }}
           # Set only on the relay path; its presence is what tells the entry
           # point to read the artifact instead of GitHub's own event file.
-          LGTM_RELAYED_EVENT: ${{ github.event_name == 'workflow_run' && 'relay/event.json' || '' }}
-        run: npm run action
+          relayed-event: ${{ github.event_name == 'workflow_run' && 'relay/event.json' || '' }}

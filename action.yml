@@ -1,0 +1,109 @@
+name: LGTM
+description: Ask the reviewer two or three questions about the pull request they just approved, generated from the diff.
+author: Spare Parts Labs
+
+branding:
+  icon: check-square
+  color: purple
+
+# Everything the runtime reads arrives as an input here and leaves as an
+# environment variable below. Nothing is read from the caller's environment by
+# accident, so what this action can see is exactly this list.
+inputs:
+  seal-key:
+    description: >
+      Signs the quiz seal, so a tampered quiz is reissued rather than graded.
+      Must be stable across runs: generate once with `openssl rand -base64 32`
+      and store it as a repository secret. Required, with no fallback.
+    required: true
+
+  anthropic-api-key:
+    description: >
+      Writes and verifies the questions. Also the only vendor that can produce
+      the reading aids and answer `@lgtm`, which need server-side web search, so
+      a repository running another vendor without this key gets questions and no
+      reading aids.
+    required: false
+    default: ''
+
+  openai-api-key:
+    description: "Used when `.github/lgtm.yml` names `provider: openai` or `verifier: openai`."
+    required: false
+    default: ''
+
+  gemini-api-key:
+    description: "Used when `.github/lgtm.yml` names `provider: gemini` or `verifier: gemini`."
+    required: false
+    default: ''
+
+  github-token:
+    description: >
+      Posts the quiz comment and the check run, and reads the diff. The default
+      is the workflow's own token, which is what you want; the workflow must
+      grant it checks:write, issues:write and pull-requests:write.
+    required: false
+    default: ${{ github.token }}
+
+  relayed-event:
+    description: >
+      Path to the event relayed by the collector workflow, relative to the
+      workspace. Set this only on the `workflow_run` path, where this run's own
+      payload describes the collector rather than the review. Leave it empty and
+      the event GitHub wrote to disk is used.
+    required: false
+    default: ''
+
+  bot-login:
+    description: >
+      The handle that summons the bot in a comment. A trigger token, not an
+      account: replies come from `github-actions[bot]` regardless.
+    required: false
+    default: lgtm
+
+  node-version:
+    description: The Node version the action runs on.
+    required: false
+    default: '22'
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-node@v4
+      with:
+        node-version: ${{ inputs.node-version }}
+
+    # --ignore-scripts because no dependency install step gets to run arbitrary
+    # code, and this one runs in the privileged half of the workflow. Dev
+    # dependencies are included: the entry point is TypeScript, run through tsx.
+    - name: Install LGTM
+      shell: bash
+      working-directory: ${{ github.action_path }}
+      run: npm ci --ignore-scripts
+
+    - name: Run LGTM
+      shell: bash
+      working-directory: ${{ github.action_path }}
+      env:
+        GITHUB_TOKEN: ${{ inputs.github-token }}
+        LGTM_SEAL_KEY: ${{ inputs.seal-key }}
+        ANTHROPIC_API_KEY: ${{ inputs.anthropic-api-key }}
+        OPENAI_API_KEY: ${{ inputs.openai-api-key }}
+        GEMINI_API_KEY: ${{ inputs.gemini-api-key }}
+        LGTM_BOT_LOGIN: ${{ inputs.bot-login }}
+        RELAYED_EVENT_INPUT: ${{ inputs.relayed-event }}
+      run: |
+        # This step runs from the action's own directory, so a relayed path the
+        # caller wrote relative to their workspace has to be made absolute here.
+        # Getting this wrong reads as "no relayed event", which silently falls
+        # back to this run's own payload and quizzes nobody.
+        if [ -n "$RELAYED_EVENT_INPUT" ]; then
+          case "$RELAYED_EVENT_INPUT" in
+            /*) export LGTM_RELAYED_EVENT="$RELAYED_EVENT_INPUT" ;;
+            *) export LGTM_RELAYED_EVENT="$GITHUB_WORKSPACE/$RELAYED_EVENT_INPUT" ;;
+          esac
+          if [ ! -f "$LGTM_RELAYED_EVENT" ]; then
+            echo "relayed event not found at $LGTM_RELAYED_EVENT" >&2
+            exit 1
+          fi
+        fi
+        node --import tsx src/action.ts
