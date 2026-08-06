@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import { DEFAULTS } from './config.ts';
 import { changedLines, isGrounded, parseDiff, renderForPrompt } from './diff.ts';
 import { generateFromDiff, wellFormed } from './generator.ts';
+import type { Provider } from './providers.ts';
 
 const DIFF = `diff --git a/src/billing/charge.ts b/src/billing/charge.ts
 index 1111111..2222222 100644
@@ -121,27 +122,30 @@ test('a balanced option set passes', () => {
 
 // --- the pipeline ----------------------------------------------------------
 
+/**
+ * A stub Provider. The vendor-specific shapes it used to imitate — message
+ * envelopes, stop reasons, refusal blocks — now belong to `providers.ts`, and
+ * testing them here would be testing the wrong file.
+ */
 function stub(handler: (prompt: string, n: number) => unknown) {
   const prompts: string[] = [];
   let n = 0;
   return {
     prompts,
     client: {
-      messages: {
-        create: async (params: { messages: { content: string }[] }) => {
-          const prompt = params.messages[0].content;
-          prompts.push(prompt);
-          const r = handler(prompt, n++);
-          if (r instanceof Error) throw r;
-          return r;
-        },
+      label: 'stub:model',
+      complete: async (prompt: string) => {
+        prompts.push(prompt);
+        const r = handler(prompt, n++);
+        if (r instanceof Error) throw r;
+        return r as string;
       },
-    } as never,
+    } satisfies Provider,
   };
 }
 
 function json(value: unknown) {
-  return { stop_reason: 'end_turn', content: [{ type: 'text', text: JSON.stringify(value) }] };
+  return JSON.stringify(value);
 }
 
 /** Proposer prompts carry the diff; verifier prompts carry the claimed answer. */
@@ -218,7 +222,7 @@ test('the verifier is not shown the proposer conversation', async () => {
   );
   await generateFromDiff(client, DIFF, DEFAULTS);
   const verify = prompts.find(isVerify)!;
-  assert.match(verify, /find a reason it should NOT be used/);
+  assert.match(verify, /Assume it is flawed/);
   assert.doesNotMatch(verify, /You are writing a short comprehension check/);
 });
 

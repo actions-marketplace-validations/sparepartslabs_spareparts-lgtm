@@ -24,6 +24,7 @@ import {
 } from './concepts.ts';
 import { DEFAULTS, parseConfig, type Config } from './config.ts';
 import { generateFromDiff, type GenerateResult } from './generator.ts';
+import { ProviderError, resolve, type Provider } from './providers.ts';
 import { screen } from './questions.ts';
 import { collect, renderReading } from './reading.ts';
 import {
@@ -156,10 +157,25 @@ async function buildQuiz(
   const prefilter = screen(files, config);
   if (prefilter.kind === 'skip') return prefilter;
 
-  if (!process.env.ANTHROPIC_API_KEY) {
-    // Neutral, not pending and not a crash: an unconfigured install must not
-    // hold a merge (spec FR-025).
-    return { kind: 'skip', reason: 'Question generation is not configured.' };
+  // Resolved before the diff is fetched: a repo that named a vendor it has no
+  // key for should be told that, not charged for a diff download first.
+  //
+  // Every failure here is a skip, which is neutral, which does not hold a
+  // merge (spec FR-025) — an unconfigured or misconfigured install must never
+  // freeze a repo, and that includes naming a provider that isn't set up.
+  let proposer: Provider;
+  let verifier: Provider;
+  try {
+    proposer = resolve(config.provider);
+    verifier = config.verifier ? resolve(config.verifier) : proposer;
+  } catch (err) {
+    return {
+      kind: 'skip',
+      reason:
+        err instanceof ProviderError
+          ? err.message
+          : 'Question generation is not configured.',
+    };
   }
 
   const { data: diff } = await context.octokit.rest.pulls.get({
@@ -168,7 +184,7 @@ async function buildQuiz(
     mediaType: { format: 'diff' },
   });
 
-  return generateFromDiff(new Anthropic(), String(diff), config);
+  return generateFromDiff(proposer, String(diff), config, verifier);
 }
 
 /**
