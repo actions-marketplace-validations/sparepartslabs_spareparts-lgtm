@@ -9,6 +9,16 @@ questions: 2
 # hard   — distractors are the plausible misreading
 difficulty: medium
 
+# Who writes the questions: anthropic, openai or gemini, optionally
+# vendor:model. Defaults to anthropic. Whichever you name has to have its key
+# set as a secret; all three can also search the web, which is what
+# surfaceReading and webConcepts below need.
+# provider: anthropic
+
+# Who tries to refute them. Defaults to the proposer. Naming a different vendor
+# is a stronger check than a model marking its own work.
+# verifier: openai
+
 # List the docs and links a reviewer needs, above the questions.
 surfaceReading: true
 

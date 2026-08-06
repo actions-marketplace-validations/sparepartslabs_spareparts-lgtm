@@ -13,7 +13,6 @@
  * a Probot server any more.
  */
 
-import Anthropic from '@anthropic-ai/sdk';
 import type { Context } from 'probot';
 
 import { ask, hasWriteAccess, parseMention, renderAnswer } from './ask.ts';
@@ -213,12 +212,34 @@ type Outcome = 'success' | 'neutral' | 'waiting';
  * way — a reviewer must never be blocked, or even delayed, because an optional
  * reading aid was unavailable (spec FR-025, FR-035).
  */
+/**
+ * A provider that can search the web, or null when this repo cannot reach one.
+ *
+ * Same vendor the questions come from, because `provider:` is the repository's
+ * one statement about who it is willing to send its diff to, and a reading aid
+ * that quietly used a second vendor would make that statement untrue.
+ *
+ * Null rather than a throw: everything the searching path produces is an extra
+ * on top of a quiz that stands on its own. A repo with no usable key gets the
+ * quiz and no reading aids, which is a documented degradation rather than a
+ * failure, and never a held merge.
+ */
+function searcher(config: Config): Provider | null {
+  try {
+    return resolve(config.provider, { search: true });
+  } catch {
+    return null;
+  }
+}
+
 async function conceptsFor(
   context: AnyContext,
   prNumber: number,
   files: { filename: string }[],
+  config: Config,
 ): Promise<string | null> {
-  if (!process.env.ANTHROPIC_API_KEY) return null;
+  const client = searcher(config);
+  if (!client) return null;
 
   try {
     // The diff, not the file list — concepts live in the hunks. `.diff` is a
@@ -232,7 +253,7 @@ async function conceptsFor(
     const text = String(diff);
     if (text.length > MAX_DIFF_CHARS) return null;
 
-    const result = await explainConcepts(new Anthropic(), {
+    const result = await explainConcepts(client, {
       diff: text,
       context: languagesIn(files),
       max: MAX_CONCEPTS,
@@ -268,7 +289,14 @@ async function handleMention(
 
   const { config } = await loadConfig(context);
   if (!config.answerQuestions) return;
-  if (!process.env.ANTHROPIC_API_KEY) return;
+
+  // No vendor this repo can reach means no answer to give. Silent, like every
+  // other reason a mention goes unanswered: the log carries the why.
+  const client = searcher(config);
+  if (!client) {
+    context.log.info('no searching provider configured — not answering');
+    return;
+  }
 
   // Write access only, read straight off the event — no extra API call, and no
   // dependence on whether the asker happens to be on the reviewer list yet.
@@ -328,7 +356,7 @@ async function handleMention(
       mediaType: { format: 'diff' },
     });
 
-    const answer = await ask(new Anthropic(), {
+    const answer = await ask(client, {
       question,
       diff: String(diff).slice(0, MAX_DIFF_CHARS),
       asker: sender.login,
@@ -454,7 +482,7 @@ export async function onReviewSubmitted(
             }),
           ),
           config.webConcepts
-            ? await conceptsFor(context, pr.number, files)
+            ? await conceptsFor(context, pr.number, files, config)
             : null,
         ]
           .filter(Boolean)
