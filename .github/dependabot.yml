@@ -1,0 +1,36 @@
+version: 2
+
+# The upgrade half of dependency scanning. `dependency-scan.yml` fails a build
+# that is already vulnerable; this opens the pull request that fixes it.
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: chore
+    groups:
+      # Split by risk, not by ecosystem. A bump to a provider SDK or to probot
+      # changes what runs in the privileged job and deserves to be read on its
+      # own; tsx and typescript moving is a one-glance PR.
+      runtime:
+        dependency-type: production
+        patterns: ["*"]
+      dev:
+        dependency-type: development
+        patterns: ["*"]
+
+  # Workflow actions pin to major tags that move, so this mostly catches
+  # deprecations (a runner dropping node16 actions, say) before they break CI.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    commit-message:
+      prefix: chore
+    groups:
+      actions:
+        patterns: ["*"]

@@ -1,0 +1,44 @@
+name: Dependency scan
+
+# Known-vulnerable dependencies, checked against the GitHub Advisory Database
+# by `npm audit` against the committed lockfile.
+#
+# Self-contained, like the secret scan: no shared workflow, no GitHub Advanced
+# Security. Dependabot (see .github/dependabot.yml) opens the upgrade PRs; this
+# job is what fails a build that ships a vulnerable dependency in the meantime.
+#
+# The schedule matters more than the PR trigger. A dependency does not become
+# vulnerable when someone edits package.json; it becomes vulnerable when an
+# advisory is published, which can be months after the last commit here.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "0 7 * * 1"
+  workflow_dispatch:
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # Runtime dependencies are the ones that execute inside the privileged
+      # Action, holding provider keys and a write token, so they fail the build
+      # at `moderate` and above.
+      - name: Audit runtime dependencies
+        run: npm audit --omit=dev --audit-level=moderate
+
+      # Dev dependencies never run in that job, only on a runner that has
+      # already checked out this repository, so hold them to high and critical
+      # rather than letting tsx's transitive tree block every unrelated PR.
+      - name: Audit the full tree
+        run: npm audit --audit-level=high
