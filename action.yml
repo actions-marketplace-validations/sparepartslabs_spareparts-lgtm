@@ -1,4 +1,4 @@
-name: LGTM
+name: Spare Parts LGTM
 description: Ask the reviewer two or three questions about the pull request they just approved, generated from the diff.
 author: Spare Parts Labs
 
