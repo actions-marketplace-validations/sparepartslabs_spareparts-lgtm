@@ -58,6 +58,18 @@ export interface Config {
   exemptPaths: string[];
   /** Logins never quizzed. Bots are always exempt regardless. */
   exemptReviewers: string[];
+  /**
+   * Who writes the questions: `anthropic`, `openai`, `gemini`, optionally
+   * `vendor:model`. Undefined means the default vendor.
+   */
+  provider?: string;
+  /**
+   * Who tries to refute them. Undefined means the proposer marks its own work,
+   * which is the weaker arrangement — a model asked to disagree with itself
+   * mostly doesn't. Naming a second vendor here is the strongest check
+   * available, and costs one vendor's tokens.
+   */
+  verifier?: string;
 }
 
 export const DEFAULTS: Config = {
@@ -69,6 +81,8 @@ export const DEFAULTS: Config = {
   enforce: false,
   exemptPaths: [],
   exemptReviewers: [],
+  provider: undefined,
+  verifier: undefined,
 };
 
 export interface LoadedConfig {
@@ -77,7 +91,7 @@ export interface LoadedConfig {
   problems: string[];
 }
 
-const DIFFICULTIES: Difficulty[] = ['easy', 'medium', 'hard'];
+export const DIFFICULTIES: Difficulty[] = ['easy', 'medium', 'hard'];
 const MIN_QUESTIONS = 1;
 const MAX_QUESTIONS = 5;
 
@@ -149,10 +163,25 @@ export function parseConfig(raw: unknown): LoadedConfig {
     return v;
   };
 
+  // `provider` and `verifier` are validated by `providers.ts`, which owns the
+  // vendor list. Checking the spelling here too would mean two places to update
+  // when a vendor is added, and they would drift.
+  const providerFor = (field: 'provider' | 'verifier'): string | undefined => {
+    const value = o[field];
+    if (value === undefined || value === null) return undefined;
+    if (typeof value !== 'string' || !value.trim()) {
+      problems.push(`\`${field}\` must be a provider name — ignored.`);
+      return undefined;
+    }
+    return value.trim();
+  };
+
   return {
     config: {
       questions,
       difficulty,
+      provider: providerFor('provider'),
+      verifier: providerFor('verifier'),
       surfaceReading: bool('surfaceReading', DEFAULTS.surfaceReading),
       webConcepts: bool('webConcepts', DEFAULTS.webConcepts),
       answerQuestions: bool('answerQuestions', DEFAULTS.answerQuestions),

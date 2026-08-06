@@ -23,11 +23,10 @@
  * all. Asking nothing is a fine outcome; asking something wrong is not.
  */
 
-import Anthropic from '@anthropic-ai/sdk';
-
-import { MODEL } from './concepts.ts';
 import type { Config } from './config.ts';
 import { isGrounded, parseDiff, renderForPrompt, type FileDiff } from './diff.ts';
+import * as prompts from './prompts.ts';
+import type { Provider } from './providers.ts';
 import type { GeneratedQuiz, Question } from './quiz.ts';
 
 /** How much diff the proposer sees. Beyond this the PR is not quizzed at all. */
@@ -35,8 +34,6 @@ export const DIFF_BUDGET = 120_000;
 
 /** Over-generate, then let verification cull. */
 const OVERSHOOT = 2;
-
-const MAX_CONTINUATIONS = 2;
 
 interface Candidate {
   prompt: string;
@@ -84,97 +81,6 @@ const VERIFY_SCHEMA = {
   additionalProperties: false,
 };
 
-const DIFFICULTY_GUIDANCE: Record<Config['difficulty'], string> = {
-  easy:
-    'Distractors should be clearly unrelated to what this hunk does — a ' +
-    'reviewer who read the change should rule them out immediately.',
-  medium:
-    'Distractors should be true statements about this PR that do not answer ' +
-    'the question asked. Skimming the diff is not enough to rule them out.',
-  hard:
-    'Distractors should be the plausible misreading: the behaviour BEFORE ' +
-    'the change, the branch not taken, an adjacent call site, or an effect ' +
-    'that looks right but happens one layer away. Only someone who read this ' +
-    'hunk closely can rule them out.',
-};
-
-function proposePrompt(diff: string, config: Config, want: number): string {
-  return [
-    'You are writing a short comprehension check for a code reviewer who has',
-    'just approved this pull request. The goal is to distinguish someone who',
-    'read the change from someone who skimmed the file list.',
-    '',
-    `Write up to ${want} multiple-choice questions. Fewer is fine. Zero is fine`,
-    'if nothing in this diff is worth asking about.',
-    '',
-    'What to ask about, in priority order:',
-    '1. Behaviour changes — what the code now does that it did not before.',
-    '2. Error and edge paths — what a new guard prevents, what a changed',
-    '   catch block now swallows or rethrows.',
-    '3. Risk — a migration that touches existing rows, a changed default, a',
-    '   security-relevant edit, a widened permission.',
-    '',
-    'Hard rules:',
-    '- The question MUST be answerable from the diff shown, and nothing else.',
-    '  If answering needs knowledge of code not in this diff, do not ask it.',
-    '- Never ask about statistics: which file has the most lines added, how',
-    '  many files changed, the order of files. That is trivia — someone who',
-    '  read the change carefully would not know it, and someone who read',
-    '  nothing could look it up in seconds.',
-    '- Never ask about naming, formatting, or style.',
-    '- Exactly one option may be correct. The others must be clearly wrong to',
-    '  someone who read the hunk, and not obviously wrong to someone who did',
-    '  not.',
-    '- Give 3 options. Keep them the same rough length and shape — a longest',
-    '  or most-detailed option that is always the answer gives the game away.',
-    '- `file` must be a path shown below. `hunk` must be the exact `@@ ... @@`',
-    '  header of the hunk you drew the question from, copied verbatim.',
-    '- `rationale` explains why the correct option is correct, citing the',
-    '  specific lines. It is not shown to the reviewer.',
-    '',
-    DIFFICULTY_GUIDANCE[config.difficulty],
-    '',
-    'The diff:',
-    '',
-    diff,
-  ].join('\n');
-}
-
-function verifyPrompt(c: Candidate, diff: string): string {
-  return [
-    'You are checking a comprehension question written by someone else for a',
-    'code reviewer. Your job is to find a reason it should NOT be used. Assume',
-    'it is flawed and look for the flaw. Only conclude it is sound if you',
-    'genuinely cannot find one.',
-    '',
-    'Mark it unsound if ANY of these is true:',
-    '- The stated correct answer is not actually correct according to the diff.',
-    '- Another option is also defensibly correct.',
-    '- The question cannot be answered from the diff alone.',
-    '- It asks about statistics, counts, file ordering, naming, or formatting',
-    '  rather than about what the change does.',
-    '- A reviewer who read this change carefully could still get it wrong —',
-    '  because it turns on an obscure detail, or is ambiguously worded.',
-    '- Someone who did NOT read the diff could pick the right option anyway:',
-    '  the correct option is the longest or most detailed, the distractors are',
-    '  nonsense, or the answer is inferable from the question wording.',
-    '- The cited hunk does not contain what the question claims.',
-    '',
-    'Be decisive. A wrong question fails a reviewer who did their job, which',
-    'is far worse than asking one fewer question. When in doubt, unsound.',
-    '',
-    `Question: ${c.prompt}`,
-    ...c.options.map((o, i) => `  ${i === c.correct ? '*' : ' '} ${o}`),
-    '(* marks the claimed answer)',
-    `Cited: ${c.file} ${c.hunk}`,
-    `Author's rationale: ${c.rationale}`,
-    '',
-    'The diff:',
-    '',
-    diff,
-  ].join('\n');
-}
-
 export type GenerateResult =
   | { kind: 'ok'; quiz: GeneratedQuiz }
   | { kind: 'skip'; reason: string };
@@ -182,14 +88,21 @@ export type GenerateResult =
 /**
  * Generate a verified quiz from a unified diff.
  *
+ * `verifier` defaults to `proposer`, which is the weaker arrangement and the
+ * one to move off when a repo has a second key: a model asked to refute its own
+ * question is being asked to disagree with itself, and it mostly doesn't.
+ * Setting `verifier:` in `.github/lgtm.yml` to a different vendor is the whole
+ * reason the provider seam exists.
+ *
  * Never throws. Every failure is a `skip` with a reason the check run can show,
  * because a generation problem must conclude neutral rather than block a merge
  * (spec FR-016, FR-025).
  */
 export async function generateFromDiff(
-  client: Anthropic,
+  proposer: Provider,
   diff: string,
   config: Config,
+  verifier: Provider = proposer,
 ): Promise<GenerateResult> {
   const files = parseDiff(diff);
   if (files.length === 0) {
@@ -206,7 +119,7 @@ export async function generateFromDiff(
 
   let candidates: Candidate[];
   try {
-    candidates = await propose(client, text, config);
+    candidates = await propose(proposer, text, config);
   } catch (err) {
     return {
       kind: 'skip',
@@ -225,7 +138,7 @@ export async function generateFromDiff(
 
   // Verified concurrently — each is independent, and the reviewer is waiting.
   const verdicts = await Promise.all(
-    grounded.map((c) => verify(client, c, text)),
+    grounded.map((c) => verify(verifier, c, text)),
   );
   const survivors = grounded.filter((_, i) => verdicts[i].sound);
 
@@ -253,16 +166,14 @@ export async function generateFromDiff(
 }
 
 async function propose(
-  client: Anthropic,
+  proposer: Provider,
   diff: string,
   config: Config,
 ): Promise<Candidate[]> {
   const want = Math.min(config.questions * OVERSHOOT, 8);
-  const response = await complete(
-    client,
-    proposePrompt(diff, config, want),
+  const response = await proposer.complete(
+    prompts.propose(diff, config.difficulty, want),
     PROPOSE_SCHEMA,
-    'high',
   );
 
   const raw = JSON.parse(response) as { questions?: unknown };
@@ -273,16 +184,21 @@ async function propose(
 }
 
 async function verify(
-  client: Anthropic,
+  verifier: Provider,
   c: Candidate,
   diff: string,
 ): Promise<{ sound: boolean; problem: string }> {
   try {
-    const response = await complete(
-      client,
-      verifyPrompt(c, diff),
+    const response = await verifier.complete(
+      prompts.verify({
+        question: c.prompt,
+        options: c.options,
+        correct: c.correct,
+        cited: `${c.file} ${c.hunk}`,
+        rationale: c.rationale,
+        diff,
+      }),
       VERIFY_SCHEMA,
-      'high',
     );
     const raw = JSON.parse(response) as { sound?: unknown; problem?: unknown };
     return {
@@ -297,47 +213,6 @@ async function verify(
       problem: err instanceof Error ? err.message : 'verification failed',
     };
   }
-}
-
-/** One structured call, with the server-tool pause loop handled. */
-async function complete(
-  client: Anthropic,
-  prompt: string,
-  schema: Record<string, unknown>,
-  effort: 'medium' | 'high',
-): Promise<string> {
-  const messages: Anthropic.MessageParam[] = [{ role: 'user', content: prompt }];
-
-  for (let attempt = 0; attempt <= MAX_CONTINUATIONS; attempt++) {
-    const response = await client.messages.create({
-      model: MODEL,
-      max_tokens: 16000,
-      output_config: { effort, format: { type: 'json_schema', schema } },
-      messages,
-    });
-
-    if (response.stop_reason === 'refusal') {
-      throw new Error(
-        `Declined (${response.stop_details?.category ?? 'unspecified'}).`,
-      );
-    }
-    if (response.stop_reason === 'pause_turn') {
-      messages.push({ role: 'assistant', content: response.content });
-      continue;
-    }
-    if (response.stop_reason === 'max_tokens') {
-      throw new Error('Generation was truncated.');
-    }
-
-    const text = response.content
-      .filter((b): b is Anthropic.TextBlock => b.type === 'text')
-      .map((b) => b.text)
-      .join('');
-    if (!text.trim()) throw new Error('Generator returned nothing.');
-    return text;
-  }
-
-  throw new Error('Generation did not finish.');
 }
 
 function isCandidate(value: unknown): value is Candidate {

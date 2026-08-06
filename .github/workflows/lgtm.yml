@@ -69,12 +69,35 @@ jobs:
       - name: Run LGTM
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Whichever vendors this repo has set up. `provider:` in
+          # .github/lgtm.yml picks between them, defaulting to Anthropic; a
+          # provider named without its key is a neutral check, never a block.
+          #
+          # ANTHROPIC_API_KEY does double duty: default question vendor, AND
+          # the only vendor for the optional reading aids (`surfaceReading`,
+          # `webConcepts`) and @lgtm answers, because those need server-side
+          # web search rather than a plain structured call. A repo running
+          # `provider: openai` with no Anthropic key gets questions and
+          # silently gets no reading aids — documented degradation, not a
+          # failure.
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           # Signs the quiz seal so a tampered quiz is reissued rather than
-          # graded. Falls back to GITHUB_TOKEN, which is per-run and would make
-          # every quiz unverifiable on the next run — set LGTM_SEAL_KEY as a
-          # repository secret for anything real.
-          LGTM_SEAL_KEY: ${{ secrets.LGTM_SEAL_KEY || secrets.GITHUB_TOKEN }}
+          # graded. NO FALLBACK, deliberately.
+          #
+          # This used to read `secrets.LGTM_SEAL_KEY || secrets.GITHUB_TOKEN`,
+          # and that fallback was silently fatal: GITHUB_TOKEN is regenerated
+          # every run, so a quiz sealed by one run could never be verified by
+          # the next. Every tick read as tampering and reissued a fresh quiz,
+          # so the questions changed underneath whoever was answering. It also
+          # defeated the guard in `sealKey()`, which can only fire when the
+          # variable is genuinely unset.
+          #
+          # Unset is now a loud startup failure, which is the correct outcome:
+          # a repo without this secret cannot grade anything, and should be
+          # told so rather than quietly looping.
+          LGTM_SEAL_KEY: ${{ secrets.LGTM_SEAL_KEY }}
           # The handle that summons the bot — a trigger token, not an account.
           # As an Action there is no `lgtm` user to mention: replies come from
           # `github-actions[bot]`. Keeping the token `@lgtm` matches the docs
