@@ -89,7 +89,7 @@ Then two secrets:
 
 | Secret | |
 | --- | --- |
-| `ANTHROPIC_API_KEY` | Writes and verifies the questions, and is the only vendor that can produce the reading aids and answer `@lgtm`. `OPENAI_API_KEY` and `GEMINI_API_KEY` are inputs too; `provider:` picks between them. |
+| A model key | One of `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` or `GEMINI_API_KEY`, passed as the matching input. `provider:` picks between them and defaults to Anthropic. All three write questions, verify them, produce the reading aids and answer `@lgtm`. |
 | `LGTM_SEAL_KEY` | `openssl rand -base64 32`, stored once and kept stable. No fallback: unset is a startup failure rather than a quiz nobody can grade. |
 
 Every input is listed in [`action.yml`](action.yml).

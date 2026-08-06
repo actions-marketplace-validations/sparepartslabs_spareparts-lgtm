@@ -3,7 +3,13 @@
  *
  * Everything LGTM asks a model to do has the same shape: here is a prompt, here
  * is a JSON Schema, return an object matching it. That is the entire interface,
- * deliberately — no streaming, no tools, no conversation.
+ * deliberately — no streaming, no conversation.
+ *
+ * Two of the things LGTM does — the reading aids and answering `@lgtm` — need
+ * the model to search the web first. That is `{ search: true }` on the call
+ * below, and every vendor implements it with its own server-side tool. It is an
+ * option on the same interface rather than a second one because the caller wants
+ * the same thing either way: a prompt in, JSON out.
  *
  * The three vendors express it differently:
  *
@@ -35,6 +41,21 @@ export interface Provider {
   /** e.g. `anthropic:claude-opus-5`. Printed, and used to tell the two apart. */
   label: string;
   complete(prompt: string, schema: Record<string, unknown>): Promise<string>;
+}
+
+export interface ProviderOptions {
+  /**
+   * Let the model search the web before answering, using the vendor's own
+   * server-side tool. Terms derived from the input reach a search provider and
+   * links come back from third parties, so this is the caller's decision to
+   * make rather than a default.
+   */
+  search?: boolean;
+  /**
+   * The SDK client, for tests. Left unset, each adapter imports its own vendor
+   * SDK lazily, which is what keeps an unused vendor's package unloaded.
+   */
+  client?: unknown;
 }
 
 export interface Vendor {
@@ -95,7 +116,7 @@ export function available(): string[] {
  * vendor. It throws for a wrong one, because a repo that asked for a vendor it
  * cannot reach should be told, not quietly given a different model.
  */
-export function resolve(spec?: string | null): Provider {
+export function resolve(spec?: string | null, options: ProviderOptions = {}): Provider {
   const [rawName, specModel] = (spec || DEFAULT_VENDOR).split(':');
   const name = rawName.trim().toLowerCase();
 
@@ -116,41 +137,79 @@ export function resolve(spec?: string | null): Provider {
   const model = specModel?.trim() || vendor.defaultModel;
   switch (name) {
     case 'anthropic':
-      return new AnthropicProvider(model, key);
+      return new AnthropicProvider(model, key, options);
     case 'openai':
-      return new OpenAIProvider(model, key);
+      return new OpenAIProvider(model, key, options);
     default:
-      return new GeminiProvider(model, key);
+      return new GeminiProvider(model, key, options);
   }
+}
+
+/**
+ * Told to return JSON without a schema to enforce it.
+ *
+ * Only Gemini needs this: it refuses a response schema and a search tool in the
+ * same call, so the schema has to be described rather than declared. Every
+ * caller already treats unparseable output as "no answer", so the worst case is
+ * the same one a refusal produces.
+ */
+function describeSchema(prompt: string, schema: Record<string, unknown>): string {
+  return [
+    prompt,
+    '',
+    'Reply with JSON matching this schema, and nothing else. No prose, no code fence.',
+    JSON.stringify(schema),
+  ].join('\n');
 }
 
 // --- anthropic -------------------------------------------------------------
 
 const MAX_CONTINUATIONS = 2;
+/** Searching takes more round trips before the turn finishes. */
+const MAX_SEARCH_CONTINUATIONS = 4;
+const MAX_SEARCHES = 6;
 
-class AnthropicProvider implements Provider {
+interface AnthropicLike {
+  messages: { create(params: unknown): Promise<Anthropic.Message> };
+}
+
+export class AnthropicProvider implements Provider {
   label: string;
   constructor(
     private model: string,
     private apiKey: string,
+    private options: ProviderOptions = {},
   ) {
     this.label = `anthropic:${model}`;
   }
 
   async complete(prompt: string, schema: Record<string, unknown>): Promise<string> {
-    const { default: Anthropic } = await import('@anthropic-ai/sdk');
-    const client = new Anthropic({ apiKey: this.apiKey });
+    // Typed structurally rather than as the SDK class, so a test can pass a
+    // fake and the search paths below stay checkable offline.
+    const client: AnthropicLike =
+      (this.options.client as AnthropicLike | undefined) ??
+      new (await import('@anthropic-ai/sdk')).default({ apiKey: this.apiKey });
     const messages: Anthropic.MessageParam[] = [{ role: 'user', content: prompt }];
 
-    for (let attempt = 0; attempt <= MAX_CONTINUATIONS; attempt++) {
+    // The 2026-02-09 variant filters results before they reach the context
+    // window. It runs code execution internally, so declaring the code
+    // execution tool alongside it would give the model two execution
+    // environments and confuse it.
+    const tools = this.options.search
+      ? [{ type: 'web_search_20260209', name: 'web_search', max_uses: MAX_SEARCHES }]
+      : undefined;
+    const limit = this.options.search ? MAX_SEARCH_CONTINUATIONS : MAX_CONTINUATIONS;
+
+    for (let attempt = 0; attempt <= limit; attempt++) {
       let response: Anthropic.Message;
       try {
-        response = await client.messages.create({
+        response = (await client.messages.create({
           model: this.model,
           max_tokens: MAX_TOKENS,
           output_config: { effort: 'high', format: { type: 'json_schema', schema } },
+          ...(tools ? { tools } : {}),
           messages,
-        });
+        })) as Anthropic.Message;
       } catch (err) {
         throw new ProviderError(`${this.label}: ${describe(err)}`);
       }
@@ -206,33 +265,49 @@ export function strictify(schema: unknown): unknown {
   return out;
 }
 
-class OpenAIProvider implements Provider {
+interface OpenAILike {
+  responses: { create(params: unknown): Promise<OpenAIResponse> };
+}
+
+interface OpenAIResponse {
+  output?: unknown[];
+  output_text?: string;
+  status?: string;
+  incomplete_details?: { reason?: string };
+}
+
+export class OpenAIProvider implements Provider {
   label: string;
   constructor(
     private model: string,
     private apiKey: string,
+    private options: ProviderOptions = {},
   ) {
     this.label = `openai:${model}`;
   }
 
   async complete(prompt: string, schema: Record<string, unknown>): Promise<string> {
-    let OpenAI;
-    try {
-      ({ default: OpenAI } = await import('openai'));
-    } catch {
-      throw new ProviderError(
-        "openai is not installed — add it to the action's dependencies.",
-      );
+    let client = this.options.client as OpenAILike | undefined;
+    if (!client) {
+      let OpenAI;
+      try {
+        ({ default: OpenAI } = await import('openai'));
+      } catch {
+        throw new ProviderError(
+          "openai is not installed — add it to the action's dependencies.",
+        );
+      }
+      client = new OpenAI({ apiKey: this.apiKey }) as unknown as OpenAILike;
     }
 
-    const client = new OpenAI({ apiKey: this.apiKey });
-    let response;
+    let response: OpenAIResponse;
     try {
       response = await client.responses.create({
         model: this.model,
         input: prompt,
         max_output_tokens: MAX_TOKENS,
         reasoning: { effort: 'high' },
+        ...(this.options.search ? { tools: [{ type: 'web_search' }] } : {}),
         text: {
           format: {
             type: 'json_schema',
@@ -289,35 +364,58 @@ export function plain(schema: unknown): unknown {
   );
 }
 
-class GeminiProvider implements Provider {
+interface GeminiLike {
+  models: { generateContent(params: unknown): Promise<GeminiResponse> };
+}
+
+interface GeminiResponse {
+  promptFeedback?: { blockReason?: string };
+  candidates?: { finishReason?: unknown }[];
+  text?: string;
+}
+
+export class GeminiProvider implements Provider {
   label: string;
   constructor(
     private model: string,
     private apiKey: string,
+    private options: ProviderOptions = {},
   ) {
     this.label = `gemini:${model}`;
   }
 
   async complete(prompt: string, schema: Record<string, unknown>): Promise<string> {
-    let GoogleGenAI;
-    try {
-      ({ GoogleGenAI } = await import('@google/genai'));
-    } catch {
-      throw new ProviderError(
-        "@google/genai is not installed — add it to the action's dependencies.",
-      );
+    let client = this.options.client as GeminiLike | undefined;
+    if (!client) {
+      let GoogleGenAI;
+      try {
+        ({ GoogleGenAI } = await import('@google/genai'));
+      } catch {
+        throw new ProviderError(
+          "@google/genai is not installed — add it to the action's dependencies.",
+        );
+      }
+      client = new GoogleGenAI({ apiKey: this.apiKey }) as unknown as GeminiLike;
     }
 
-    const client = new GoogleGenAI({ apiKey: this.apiKey });
-    let response;
+    // Search grounding and a response schema are mutually exclusive here, so a
+    // searching call describes the schema in the prompt instead of declaring
+    // it. Sending both is a 400, not a silently ignored field.
+    const searching = this.options.search === true;
+
+    let response: GeminiResponse;
     try {
       response = await client.models.generateContent({
         model: this.model,
-        contents: prompt,
+        contents: searching ? describeSchema(prompt, schema) : prompt,
         config: {
-          responseMimeType: 'application/json',
-          responseJsonSchema: plain(schema),
           maxOutputTokens: MAX_TOKENS,
+          ...(searching
+            ? { tools: [{ googleSearch: {} }] }
+            : {
+                responseMimeType: 'application/json',
+                responseJsonSchema: plain(schema),
+              }),
         },
       });
     } catch (err) {
@@ -337,8 +435,21 @@ class GeminiProvider implements Provider {
 
     const text = response.text ?? '';
     if (!text.trim()) throw new ProviderError(`${this.label} returned nothing.`);
-    return text;
+    // Only the searching path can fence its output: the other one is decoded
+    // against a schema, so there is nothing to unwrap.
+    return searching ? unfence(text) : text;
   }
+}
+
+/**
+ * Strip a ```json fence, if the model added one.
+ *
+ * Asked for JSON in a prompt rather than through a schema, a model will
+ * sometimes wrap it. Text that is not fenced comes back untouched.
+ */
+export function unfence(text: string): string {
+  const match = text.trim().match(/^```(?:json)?\s*\n([\s\S]*?)\n?```$/);
+  return match ? match[1] : text;
 }
 
 function describe(err: unknown): string {

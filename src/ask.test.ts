@@ -8,31 +8,27 @@ import {
   renderAnswer,
   type Answer,
 } from './ask.ts';
+import type { Provider } from './providers.ts';
 
-function stub(...responses: unknown[]) {
-  const calls: unknown[] = [];
+/** A stub provider: the vendor wire formats are `providers.test.ts`'s job. */
+function stub(...responses: (string | Error)[]) {
+  const calls: { prompt: string; schema: unknown }[] = [];
   let i = 0;
-  return {
-    calls,
-    client: {
-      messages: {
-        create: async (params: unknown) => {
-          calls.push(params);
-          const r = responses[Math.min(i, responses.length - 1)];
-          i++;
-          if (r instanceof Error) throw r;
-          return r;
-        },
-      },
-    } as never,
+  const client: Provider = {
+    label: 'stub:model',
+    complete: async (prompt: string, schema: Record<string, unknown>) => {
+      calls.push({ prompt, schema });
+      const r = responses[Math.min(i, responses.length - 1)];
+      i++;
+      if (r instanceof Error) throw r;
+      return r;
+    },
   };
+  return { calls, client };
 }
 
-function reply(kind: string, body: string, stop_reason = 'end_turn') {
-  return {
-    stop_reason,
-    content: [{ type: 'text', text: JSON.stringify({ kind, body }) }],
-  };
+function reply(kind: string, body: string) {
+  return JSON.stringify({ kind, body });
 }
 
 const INPUT = { question: 'what is an HMAC?', diff: '@@ -1 +1 @@', asker: 'alice' };
@@ -99,45 +95,24 @@ test('an unrecognised classification falls to declined, not answered', async () 
 test('the prompt teaches the boundary and forbids summarising', async () => {
   const { client, calls } = stub(reply('background', 'x'));
   await ask(client, INPUT);
-  const text = JSON.stringify(calls[0]);
+  const text = calls[0].prompt;
   assert.match(text, /reading_for_you/);
   assert.match(text, /what does this PR do/);
   assert.match(text, /ambiguous/,  'ambiguity must resolve toward declining');
 });
 
-test('the request declares web search so docs questions can be sourced', async () => {
-  const { client, calls } = stub(reply('background', 'x'));
-  await ask(client, INPUT);
-  const params = calls[0] as { tools: { type: string }[] };
-  assert.deepEqual(
-    params.tools.map((t) => t.type),
-    ['web_search_20260209'],
-  );
-});
-
 // --- failure paths ---------------------------------------------------------
 
-test('a paused turn is resumed', async () => {
-  const { client, calls } = stub(
-    { stop_reason: 'pause_turn', content: [{ type: 'text', text: '' }] },
-    reply('background', 'answer'),
-  );
-  assert.equal((await ask(client, INPUT)).kind, 'answered');
-  assert.equal(calls.length, 2);
-});
-
-test('refusal, truncation, bad JSON, and errors are all unavailable', async () => {
-  const cases: unknown[] = [
-    { stop_reason: 'refusal', stop_details: { category: 'cyber' }, content: [] },
-    { stop_reason: 'max_tokens', content: [{ type: 'text', text: '{"kind":"back' }] },
-    { stop_reason: 'end_turn', content: [{ type: 'text', text: 'not json' }] },
-    { stop_reason: 'end_turn', content: [{ type: 'text', text: '{"kind":"background"}' }] },
-    { stop_reason: 'end_turn', content: [] },
+test('bad JSON, a missing body, nothing at all, and errors are unavailable', async () => {
+  const cases: (string | Error)[] = [
+    'not json',
+    '{"kind":"background"}',
+    '',
     new Error('529 overloaded'),
   ];
   for (const c of cases) {
     const { client } = stub(c);
-    assert.equal((await ask(client, INPUT)).kind, 'unavailable', JSON.stringify(c));
+    assert.equal((await ask(client, INPUT)).kind, 'unavailable', String(c));
   }
 });
 

@@ -16,7 +16,7 @@
  * and gets narrower still once the real quiz generator lands.
  */
 
-import Anthropic from '@anthropic-ai/sdk';
+import type { Provider } from './providers.ts';
 
 /** A model — and a network call — is in this path, so everything fails soft. */
 export interface Concept {
@@ -29,7 +29,7 @@ export interface Concept {
 }
 
 export interface ExplainInput {
-  /** Unified diff. Sent to the Anthropic API; see the privacy note below. */
+  /** Unified diff. Sent to the model vendor; see the privacy note below. */
   diff: string;
   /** Repo languages/frameworks, so the model doesn't explain the obvious. */
   context: string;
@@ -37,11 +37,7 @@ export interface ExplainInput {
   max: number;
 }
 
-export const MODEL = 'claude-opus-5';
 export const MAX_CONCEPTS = 3;
-
-/** Bounds the server-tool loop: each `pause_turn` costs one. */
-const MAX_CONTINUATIONS = 4;
 
 const SCHEMA = {
   type: 'object' as const,
@@ -100,14 +96,17 @@ export type ExplainResult =
   | { kind: 'unavailable'; reason: string };
 
 /**
- * Ask Claude what a reviewer would need to look up, with web search.
+ * Ask the model what a reviewer would need to look up, with web search.
  *
- * EGRESS: this sends the diff to the Anthropic API — but so will the real quiz
- * generator (spec FR-011..FR-013), which reads hunks with a model. Once that
- * replaces the placeholder in `questions.ts`, "the diff reaches Anthropic" is
- * true of LGTM generally and is not what this toggle controls.
+ * The caller supplies a provider built with `{ search: true }`, so which vendor
+ * searches is the repository's choice. Every vendor does it with its own
+ * server-side tool.
  *
- * What it does control is the hop past Anthropic: the model issues web
+ * EGRESS: this sends the diff to whichever vendor is configured — but so does
+ * the quiz generator, which reads hunks with a model. "The diff reaches a model
+ * vendor" is true of LGTM generally and is not what this toggle controls.
+ *
+ * What it does control is the hop past that vendor: the model issues web
  * searches, so terms derived from the diff reach a search provider and the
  * links come back from third parties. A repo that is fine with a model reading
  * its diff may still not want it queried against the open web. That is the
@@ -118,67 +117,23 @@ export type ExplainResult =
  * back as `unavailable`, and the caller omits the section (spec FR-025).
  */
 export async function explainConcepts(
-  client: Anthropic,
+  client: Provider,
   input: ExplainInput,
 ): Promise<ExplainResult> {
-  const messages: Anthropic.MessageParam[] = [
-    { role: 'user', content: prompt(input) },
-  ];
-
+  let text: string;
   try {
-    for (let attempt = 0; attempt <= MAX_CONTINUATIONS; attempt++) {
-      const response = await client.messages.create({
-        model: MODEL,
-        max_tokens: 8000,
-        // The 2026-02-09 variant filters results before they reach the context
-        // window. It runs code execution internally, so declaring the code
-        // execution tool alongside it would give the model two execution
-        // environments and confuse it.
-        tools: [{ type: 'web_search_20260209', name: 'web_search', max_uses: 6 }],
-        output_config: {
-          format: { type: 'json_schema', schema: SCHEMA },
-        },
-        messages,
-      });
-
-      // Safety classifiers can decline; that is a 200 with no usable content.
-      if (response.stop_reason === 'refusal') {
-        return {
-          kind: 'unavailable',
-          reason: `declined (${response.stop_details?.category ?? 'unspecified'})`,
-        };
-      }
-
-      // A long server-tool turn stops here rather than finishing. Append the
-      // partial assistant turn and re-send; the server resumes on its own, so
-      // no extra user message is added.
-      if (response.stop_reason === 'pause_turn') {
-        messages.push({ role: 'assistant', content: response.content });
-        continue;
-      }
-
-      if (response.stop_reason === 'max_tokens') {
-        return { kind: 'unavailable', reason: 'response was truncated' };
-      }
-
-      return parse(response, input.max);
-    }
-
-    return { kind: 'unavailable', reason: 'search did not finish in time' };
+    text = await client.complete(prompt(input), SCHEMA);
   } catch (err) {
     return {
       kind: 'unavailable',
       reason: err instanceof Error ? err.message : 'unknown error',
     };
   }
+
+  return parse(text, input.max);
 }
 
-function parse(response: Anthropic.Message, max: number): ExplainResult {
-  const text = response.content
-    .filter((b): b is Anthropic.TextBlock => b.type === 'text')
-    .map((b) => b.text)
-    .join('');
-
+function parse(text: string, max: number): ExplainResult {
   if (!text.trim()) return { kind: 'unavailable', reason: 'empty response' };
 
   let raw: unknown;

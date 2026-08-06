@@ -17,12 +17,13 @@ inputs:
       and store it as a repository secret. Required, with no fallback.
     required: true
 
+  # Set the key for the vendor you use. `provider:` in .github/lgtm.yml picks
+  # between them and defaults to anthropic; a provider named without its key is
+  # a neutral check, never a block. Every vendor here can also search the web,
+  # which is what the reading aids and `@lgtm` answers need, so none of the
+  # three is a second-class choice.
   anthropic-api-key:
-    description: >
-      Writes and verifies the questions. Also the only vendor that can produce
-      the reading aids and answer `@lgtm`, which need server-side web search, so
-      a repository running another vendor without this key gets questions and no
-      reading aids.
+    description: "Used when `.github/lgtm.yml` names `provider: anthropic` or `verifier: anthropic`, which is also the default."
     required: false
     default: ''
 

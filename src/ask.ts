@@ -23,9 +23,7 @@
  * background, "what does this PR do to retries?" is not.
  */
 
-import Anthropic from '@anthropic-ai/sdk';
-
-import { MODEL } from './concepts.ts';
+import type { Provider } from './providers.ts';
 
 export interface AskInput {
   /** The reviewer's question, mention stripped. */
@@ -40,8 +38,6 @@ export type Answer =
   | { kind: 'answered'; text: string }
   | { kind: 'declined'; text: string }
   | { kind: 'unavailable'; reason: string };
-
-const MAX_CONTINUATIONS = 4;
 
 const SCHEMA = {
   type: 'object' as const,
@@ -105,57 +101,21 @@ function prompt(input: AskInput): string {
 }
 
 /** Never throws; a failure is a reply we don't post. */
-export async function ask(
-  client: Anthropic,
-  input: AskInput,
-): Promise<Answer> {
-  const messages: Anthropic.MessageParam[] = [
-    { role: 'user', content: prompt(input) },
-  ];
-
+export async function ask(client: Provider, input: AskInput): Promise<Answer> {
+  let text: string;
   try {
-    for (let attempt = 0; attempt <= MAX_CONTINUATIONS; attempt++) {
-      const response = await client.messages.create({
-        model: MODEL,
-        max_tokens: 8000,
-        tools: [{ type: 'web_search_20260209', name: 'web_search', max_uses: 5 }],
-        output_config: {
-          format: { type: 'json_schema', schema: SCHEMA },
-        },
-        messages,
-      });
-
-      if (response.stop_reason === 'refusal') {
-        return {
-          kind: 'unavailable',
-          reason: `declined (${response.stop_details?.category ?? 'unspecified'})`,
-        };
-      }
-      if (response.stop_reason === 'pause_turn') {
-        messages.push({ role: 'assistant', content: response.content });
-        continue;
-      }
-      if (response.stop_reason === 'max_tokens') {
-        return { kind: 'unavailable', reason: 'answer was truncated' };
-      }
-
-      return parse(response);
-    }
-    return { kind: 'unavailable', reason: 'search did not finish in time' };
+    text = await client.complete(prompt(input), SCHEMA);
   } catch (err) {
     return {
       kind: 'unavailable',
       reason: err instanceof Error ? err.message : 'unknown error',
     };
   }
+
+  return parse(text);
 }
 
-function parse(response: Anthropic.Message): Answer {
-  const text = response.content
-    .filter((b): b is Anthropic.TextBlock => b.type === 'text')
-    .map((b) => b.text)
-    .join('');
-
+function parse(text: string): Answer {
   if (!text.trim()) return { kind: 'unavailable', reason: 'empty response' };
 
   let raw: unknown;
