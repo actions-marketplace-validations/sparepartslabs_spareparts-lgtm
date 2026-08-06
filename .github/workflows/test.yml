@@ -1,0 +1,44 @@
+name: Tests
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# Nothing here holds a secret or a write token. These jobs run this repository's
+# own code against its own tests; the privileged path lives in `lgtm.yml` and is
+# deliberately kept apart from anything that checks out a contributor's branch.
+permissions:
+  contents: read
+
+jobs:
+  test:
+    # What the check reads as on a PR: "Tests / typecheck and tests on Node 22".
+    # The default would be `test (22)`, which says nothing about which of the
+    # two numbers is the one the Action actually runs on.
+    name: typecheck and tests on Node ${{ matrix.node-version }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 22 is what the Action pins in `lgtm.yml`; 24 is the current LTS, and
+        # the tests lean on `node --test`, which keeps moving.
+        node-version: ["22", "24"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: npm
+
+      # --ignore-scripts for the same reason the Action uses it: no dependency
+      # install step gets to run arbitrary code in CI.
+      - run: npm ci --ignore-scripts
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Run tests
+        run: npm test
