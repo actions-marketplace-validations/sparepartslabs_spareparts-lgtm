@@ -13,6 +13,10 @@ permissions:
 
 jobs:
   test:
+    # What the check reads as on a PR: "Tests / typecheck and tests on Node 22".
+    # The default would be `test (22)`, which says nothing about which of the
+    # two numbers is the one the Action actually runs on.
+    name: typecheck and tests on Node ${{ matrix.node-version }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false

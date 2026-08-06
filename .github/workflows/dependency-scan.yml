@@ -21,6 +21,7 @@ on:
 
 jobs:
   audit:
+    name: npm audit
     runs-on: ubuntu-latest
     permissions:
       contents: read
