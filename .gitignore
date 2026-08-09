@@ -5,3 +5,10 @@ node_modules/
 
 # Design notes — kept locally, not shipped with the tool.
 specs/
+
+# Spare Parts engineering context: regenerable output and per-run state.
+/.sp/execute/
+/.sp/feature.json
+**/.sp/traces.db*
+/.sp/scripts/
+/.sp/templates/
