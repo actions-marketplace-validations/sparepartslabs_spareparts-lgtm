@@ -2,15 +2,33 @@
 
 A GitHub Action that asks the reviewer two or three questions about the PR they just approved, generated from the diff, and reports the result as a check run.
 
-## Codex plugin
+## Agent command
 
-The release archive also provides `lgtm@sparepartslabs`, a skills-only Codex plugin. After registering the extracted marketplace, install the `lgtm` plugin and ask Codex to run LGTM in a Git worktree. The skill checks for the `sp` executable and delegates to `sp lgtm`; it does not reproduce the CLI workflow.
+The release archive provides one canonical LGTM command for Claude, Codex,
+Cursor, GitHub Copilot, Gemini, and OpenCode—the same agent matrix supported by
+`sp ec install`. Install it through the Spare Parts CLI:
 
-On first interactive use, when no preference is already visible, the skill asks whether Codex should remember to run LGTM before an agent performs a `git push` or creates a pull request. Consent produces an explicit memory candidate. Memory extraction is asynchronous, so use `/memories` to verify, enable, change, or remove it. The plugin never edits generated memory files.
+```sh
+sp plugin install lgtm --agent claude --dir .
+sp plugin install lgtm --agent cursor --agent gemini --dir .
+sp plugin install lgtm --all --dir .
+```
 
-This reminder applies only to agent-initiated publishing. It does not intercept shell commands the user runs independently and does not install a Git hook. The existing `sp lgtm install` hook remains a separate, explicit CLI feature.
+The installed command checks for `sp` and delegates to `sp lgtm`; it does not
+reproduce the CLI workflow. On first interactive use, when no preference is
+already visible, it asks whether the active agent should remember to run LGTM
+before an agent-initiated `git push` or pull-request creation. With consent it
+uses only that host's supported, user-visible memory or instruction mechanism,
+and never claims persistence until the host confirms it.
 
-The archive includes `plugins/lgtm/commands/lgtm.md` as the canonical, agent-neutral command for the same matrix supported by `sp ec install`: Claude, Codex, Cursor, GitHub Copilot, Gemini, and OpenCode. Installers copy or render that asset instead of carrying a private version. The Codex skill embeds the canonical body and adds only its supported `/memories` guidance; validation prevents the two from drifting.
+This reminder applies only to publishing performed by the agent. It cannot
+intercept commands the user runs independently and does not install a Git hook.
+The existing `sp lgtm install` hook remains a separate, explicit CLI feature.
+
+The canonical source is `plugins/lgtm/commands/lgtm.md`. Agent-specific files
+are wrappers around that source, and validation prevents them from drifting.
+Codex also has an optional marketplace adapter, `lgtm@sparepartslabs`; that
+adapter adds only Codex-specific `/memories` guidance.
 
 Not a code reviewer. It has no opinion on whether the change is good — only on whether anyone read it. Friendly by design: it hands you the docs first, gives unlimited attempts, keeps no score, and can never mark a review as failed.
 
