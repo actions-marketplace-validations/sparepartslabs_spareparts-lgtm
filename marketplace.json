@@ -1,0 +1,10 @@
+{
+  "name": "sparepartslabs",
+  "interface": { "displayName": "Spare Parts Labs" },
+  "plugins": [{
+    "name": "lgtm",
+    "source": { "source": "local", "path": "./plugins/lgtm" },
+    "policy": { "installation": "AVAILABLE", "authentication": "ON_INSTALL" },
+    "category": "Developer Tools"
+  }]
+}

@@ -2,6 +2,16 @@ node_modules/
 .env
 *.pem
 .DS_Store
+*.tmp
+*.log
+.env*
+dist/
+build/
+coverage/
+release/
+staging/
+sparepartslabs-lgtm-marketplace-*.tar.gz
+sparepartslabs-lgtm-marketplace-*.sha256
 
 # Design notes — kept locally, not shipped with the tool.
 specs/

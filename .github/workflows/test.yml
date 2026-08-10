@@ -42,3 +42,9 @@ jobs:
 
       - name: Run tests
         run: npm test
+
+      - name: Validate Codex plugin
+        run: npm run plugin:validate
+
+      - name: Package Codex plugin
+        run: npm run plugin:package -- --output /tmp/lgtm-plugin-test
