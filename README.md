@@ -2,6 +2,16 @@
 
 A GitHub Action that asks the reviewer two or three questions about the PR they just approved, generated from the diff, and reports the result as a check run.
 
+## Codex plugin
+
+The release archive also provides `lgtm@sparepartslabs`, a skills-only Codex plugin. After registering the extracted marketplace, install the `lgtm` plugin and ask Codex to run LGTM in a Git worktree. The skill checks for the `sp` executable and delegates to `sp lgtm`; it does not reproduce the CLI workflow.
+
+On first interactive use, when no preference is already visible, the skill asks whether Codex should remember to run LGTM before an agent performs a `git push` or creates a pull request. Consent produces an explicit memory candidate. Memory extraction is asynchronous, so use `/memories` to verify, enable, change, or remove it. The plugin never edits generated memory files.
+
+This reminder applies only to agent-initiated publishing. It does not intercept shell commands the user runs independently and does not install a Git hook. The existing `sp lgtm install` hook remains a separate, explicit CLI feature.
+
+The archive includes `plugins/lgtm/commands/lgtm.md` as the canonical, agent-neutral command for the same matrix supported by `sp ec install`: Claude, Codex, Cursor, GitHub Copilot, Gemini, and OpenCode. Installers copy or render that asset instead of carrying a private version. The Codex skill embeds the canonical body and adds only its supported `/memories` guidance; validation prevents the two from drifting.
+
 Not a code reviewer. It has no opinion on whether the change is good — only on whether anyone read it. Friendly by design: it hands you the docs first, gives unlimited attempts, keeps no score, and can never mark a review as failed.
 
 ## Shape

@@ -1,0 +1,18 @@
+{
+  "name": "lgtm",
+  "version": "1.1.0",
+  "description": "Run Spare Parts LGTM against unpublished changes and optionally remember a pre-publish reminder.",
+  "author": { "name": "Spare Parts Labs" },
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "LGTM",
+    "shortDescription": "Confirm changes were read before publishing",
+    "longDescription": "Run Spare Parts LGTM on unpublished repository changes and optionally remember to run it before agent-initiated pushes and pull requests.",
+    "developerName": "Spare Parts Labs",
+    "category": "Developer Tools",
+    "capabilities": ["Interactive"],
+    "defaultPrompt": [
+      "Run LGTM against my unpublished changes."
+    ]
+  }
+}

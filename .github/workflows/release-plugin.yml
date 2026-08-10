@@ -1,0 +1,36 @@
+name: Release Codex plugin
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run plugin:validate
+      - name: Package marketplace
+        env:
+          TAG: ${{ github.ref_name }}
+        run: npm run plugin:package -- --version "${TAG#v}" --output release
+      - name: Validate archive members
+        run: |
+          archive=$(find release -name '*.tar.gz' -type f -print -quit)
+          test -n "$archive"
+          tar -tzf "$archive" | awk 'BEGIN { bad=0 } /^\// || /(^|\/)\.\.($|\/)/ { bad=1 } END { exit bad }'
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            release/*.tar.gz
+            release/*.sha256

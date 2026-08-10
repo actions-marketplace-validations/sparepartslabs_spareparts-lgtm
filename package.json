@@ -6,7 +6,9 @@
   "scripts": {
     "test": "node --import tsx --test src/*.test.ts",
     "action": "node --import tsx src/action.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "plugin:validate": "node scripts/validate-plugin.mjs",
+    "plugin:package": "node scripts/package-plugin.mjs"
   },
   "devDependencies": {
     "@types/node": "^26",
