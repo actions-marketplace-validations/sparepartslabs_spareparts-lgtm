@@ -67,7 +67,7 @@ jobs:
           write-repository: "false"
           publish-s3: "true"
           s3-bucket: ${{ vars.CHANGELOG_S3_BUCKET }}
-          s3-key: releases/lgtm/${{ steps.changelog-object.outputs.version }}.md
+          s3-key: releases/spareparts-lgtm/${{ steps.changelog-object.outputs.version }}.md
           s3-region: ${{ vars.AWS_REGION || 'us-east-1' }}
           publish-linkedin: "false"
       - name: Write canonical release notes

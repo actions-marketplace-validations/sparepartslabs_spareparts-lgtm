@@ -73,7 +73,7 @@ test("release workflow preserves artifacts and uses canonical notes safely", () 
   assert.match(source, /aws-region: \$\{\{ vars\.AWS_REGION \|\| 'us-east-1' \}\}/);
   assert.match(source, /publish-s3: "true"/);
   assert.match(source, /s3-bucket: \$\{\{ vars\.CHANGELOG_S3_BUCKET \}\}/);
-  assert.match(source, /s3-key: releases\/lgtm\/\$\{\{ steps\.changelog-object\.outputs\.version \}\}\.md/);
+  assert.match(source, /s3-key: releases\/spareparts-lgtm\/\$\{\{ steps\.changelog-object\.outputs\.version \}\}\.md/);
   assert.match(source, /version=\$\{TAG#v\}/);
   assert.match(source, /publish-linkedin: "false"/);
   assert.match(source, /body_path: release\/release-notes\.md/);
