@@ -12,6 +12,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           node-version: "24"
@@ -29,8 +31,33 @@ jobs:
           archive=$(find release -name '*.tar.gz' -type f -print -quit)
           test -n "$archive"
           tar -tzf "$archive" | awk 'BEGIN { bad=0 } /^\// || /(^|\/)\.\.($|\/)/ { bad=1 } END { exit bad }'
+      - name: Resolve release range
+        id: release-range
+        env:
+          TAG: ${{ github.ref_name }}
+        run: scripts/resolve-release-range.sh "$TAG" "$GITHUB_OUTPUT"
+      - name: Render end-user release notes
+        id: changelog
+        uses: sparepartslabs/spareparts-changelog@v0
+        with:
+          provider: anthropic
+          instructions: ${{ vars.CHANGELOG_INSTRUCTIONS }}
+          anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
+          from: ${{ steps.release-range.outputs.from }}
+          to: ${{ steps.release-range.outputs.to }}
+          title: ${{ github.ref_name }}
+          write-repository: "false"
+          publish-s3: "false"
+          publish-linkedin: "false"
+      - name: Write canonical release notes
+        env:
+          RELEASE_NOTES: ${{ steps.changelog.outputs.markdown }}
+        run: |
+          test -n "$RELEASE_NOTES"
+          printf '%s\n' "$RELEASE_NOTES" > release/release-notes.md
       - uses: softprops/action-gh-release@v2
         with:
+          body_path: release/release-notes.md
           files: |
             release/*.tar.gz
             release/*.sha256
