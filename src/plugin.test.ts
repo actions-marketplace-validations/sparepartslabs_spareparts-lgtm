@@ -11,7 +11,7 @@ const asObject = (value: unknown): JsonObject => { assert(value && typeof value 
 test("manifest and marketplace expose the canonical install identity", async () => {
   const manifest = asObject(await readJson("plugins/lgtm/.codex-plugin/plugin.json"));
   assert.equal(manifest.name, "lgtm"); assert.match(String(manifest.version), /^\d+\.\d+\.\d+$/); assert.equal(manifest.skills, "./skills/");
-  const marketplace = asObject(await readJson("marketplace.json")); assert.equal(marketplace.name, "sparepartslabs");
+  const marketplace = asObject(await readJson(".agents/plugins/marketplace.json")); assert.equal(marketplace.name, "sparepartslabs");
   const plugins = marketplace.plugins as unknown[]; assert.equal(plugins.length, 1); const entry = asObject(plugins[0]);
   assert.deepEqual(entry.source, { source: "local", path: "./plugins/lgtm" });
   assert.deepEqual(entry.policy, { installation: "AVAILABLE", authentication: "ON_INSTALL" }); assert.equal(entry.category, "Developer Tools");
@@ -68,7 +68,7 @@ test("packager produces deterministic, minimal, version-injected archives", asyn
   assert.equal(createHash("sha256").update(a).digest("hex"), createHash("sha256").update(b).digest("hex"));
   const listing = await execute("tar", ["-tzf", path.join(first, filename)]); assert.equal(listing.code, 0, listing.stderr);
   const members = listing.stdout.trim().split("\n"); assert(members.every((member) => member.startsWith("sparepartslabs-lgtm-marketplace-2.3.4/"))); assert(members.every((member) => !member.includes("../")));
-  assert(members.some((member) => member.endsWith("marketplace.json"))); assert(members.some((member) => member.endsWith(".codex-plugin/plugin.json"))); assert(members.some((member) => member.endsWith("skills/lgtm/SKILL.md"))); assert(members.some((member) => member.endsWith("commands/lgtm.md")));
+  assert(members.some((member) => member.endsWith(".agents/plugins/marketplace.json"))); assert(members.some((member) => member.endsWith(".codex-plugin/plugin.json"))); assert(members.some((member) => member.endsWith("skills/lgtm/SKILL.md"))); assert(members.some((member) => member.endsWith("commands/lgtm.md")));
   assert(members.every((member) => !/(?:node_modules|src\/|memory|\.env)/.test(member)));
   const manifest = await execute("tar", ["-xOzf", path.join(first, filename), "sparepartslabs-lgtm-marketplace-2.3.4/plugins/lgtm/.codex-plugin/plugin.json"]); assert.equal(manifest.code, 0); assert.equal(JSON.parse(manifest.stdout).version, "2.3.4");
 }));
