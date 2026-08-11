@@ -1,4 +1,4 @@
-name: Release Codex plugin
+name: Publish LGTM release
 
 on:
   push:
