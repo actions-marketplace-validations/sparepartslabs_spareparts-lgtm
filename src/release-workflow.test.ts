@@ -9,6 +9,7 @@ import { fileURLToPath } from "node:url";
 const repositoryRoot = resolve(fileURLToPath(new URL("..", import.meta.url)));
 const resolver = resolve(repositoryRoot, "scripts/resolve-release-range.sh");
 const workflow = resolve(repositoryRoot, ".github/workflows/release-plugin.yml");
+const semanticWorkflow = resolve(repositoryRoot, ".github/workflows/semantic-release.yml");
 
 function git(directory: string, ...args: string[]): string {
   return execFileSync("git", args, { cwd: directory, encoding: "utf8" }).trim();
@@ -71,4 +72,18 @@ test("release workflow preserves artifacts and uses canonical notes safely", () 
   assert.match(source, /body_path: release\/release-notes\.md/);
   assert.match(source, /release\/\*\.tar\.gz/);
   assert.match(source, /release\/\*\.sha256/);
+  assert.match(source, /workflow_dispatch:/);
+  assert.match(source, /tag_name: \$\{\{ inputs\.tag \|\| github\.ref_name \}\}/);
+});
+
+test("successful main pushes create one semantic tag and dispatch packaging", () => {
+  const source = readFileSync(semanticWorkflow, "utf8");
+  assert.match(source, /workflow_run:/);
+  assert.match(source, /workflows: \[Tests\]/);
+  assert.match(source, /workflow_run\.conclusion == 'success'/);
+  assert.match(source, /workflow_run\.event == 'push'/);
+  assert.match(source, /workflow_run\.head_branch == 'main'/);
+  assert.match(source, /cz bump --get-next/);
+  assert.match(source, /git push origin "\$TAG"/);
+  assert.match(source, /gh workflow run release-plugin\.yml --ref main -f tag="\$TAG"/);
 });
