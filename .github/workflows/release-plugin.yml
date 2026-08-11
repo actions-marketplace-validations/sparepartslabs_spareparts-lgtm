@@ -3,6 +3,12 @@ name: Release Codex plugin
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to package, e.g. v1.2.0"
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -13,6 +19,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: ${{ inputs.tag || github.ref_name }}
           fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
@@ -24,7 +31,7 @@ jobs:
       - run: npm run plugin:validate
       - name: Package marketplace
         env:
-          TAG: ${{ github.ref_name }}
+          TAG: ${{ inputs.tag || github.ref_name }}
         run: npm run plugin:package -- --version "${TAG#v}" --output release
       - name: Validate archive members
         run: |
@@ -34,7 +41,7 @@ jobs:
       - name: Resolve release range
         id: release-range
         env:
-          TAG: ${{ github.ref_name }}
+          TAG: ${{ inputs.tag || github.ref_name }}
         run: scripts/resolve-release-range.sh "$TAG" "$GITHUB_OUTPUT"
       - name: Render end-user release notes
         id: changelog
@@ -45,7 +52,7 @@ jobs:
           anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
           from: ${{ steps.release-range.outputs.from }}
           to: ${{ steps.release-range.outputs.to }}
-          title: ${{ github.ref_name }}
+          title: ${{ inputs.tag || github.ref_name }}
           write-repository: "false"
           publish-s3: "false"
           publish-linkedin: "false"
@@ -57,6 +64,7 @@ jobs:
           printf '%s\n' "$RELEASE_NOTES" > release/release-notes.md
       - uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ inputs.tag || github.ref_name }}
           body_path: release/release-notes.md
           files: |
             release/*.tar.gz
