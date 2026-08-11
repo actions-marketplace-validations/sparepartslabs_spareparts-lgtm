@@ -12,6 +12,7 @@ on:
 
 permissions:
   contents: write
+  id-token: write
 
 jobs:
   package:
@@ -43,6 +44,16 @@ jobs:
         env:
           TAG: ${{ inputs.tag || github.ref_name }}
         run: scripts/resolve-release-range.sh "$TAG" "$GITHUB_OUTPUT"
+      - name: Resolve changelog object key
+        id: changelog-object
+        env:
+          TAG: ${{ inputs.tag || github.ref_name }}
+        run: echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+      - name: Assume changelog publisher role
+        uses: aws-actions/configure-aws-credentials@v5
+        with:
+          role-to-assume: ${{ vars.CHANGELOG_AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION || 'us-east-1' }}
       - name: Render end-user release notes
         id: changelog
         uses: sparepartslabs/spareparts-changelog@v0
@@ -54,7 +65,10 @@ jobs:
           to: ${{ steps.release-range.outputs.to }}
           title: ${{ inputs.tag || github.ref_name }}
           write-repository: "false"
-          publish-s3: "false"
+          publish-s3: "true"
+          s3-bucket: ${{ vars.CHANGELOG_S3_BUCKET }}
+          s3-key: releases/lgtm/${{ steps.changelog-object.outputs.version }}.md
+          s3-region: ${{ vars.AWS_REGION || 'us-east-1' }}
           publish-linkedin: "false"
       - name: Write canonical release notes
         env:
