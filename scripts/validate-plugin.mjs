@@ -3,7 +3,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const marketplacePath = path.join(root, "marketplace.json");
+const marketplacePath = path.join(root, ".agents", "plugins", "marketplace.json");
 const pluginRoot = path.join(root, "plugins", "lgtm");
 const manifestPath = path.join(pluginRoot, ".codex-plugin", "plugin.json");
 const semver = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
