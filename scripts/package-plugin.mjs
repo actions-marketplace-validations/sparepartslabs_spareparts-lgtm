@@ -15,7 +15,7 @@ export async function packagePlugin(args = process.argv.slice(2)) {
   try {
     await mkdir(path.join(stage, "plugins"), { recursive: true }); await cp(path.join(root, "marketplace.json"), path.join(stage, "marketplace.json")); await cp(path.join(root, "plugins", "lgtm"), path.join(stage, "plugins", "lgtm"), { recursive: true, dereference: false });
     const manifestPath = path.join(stage, "plugins", "lgtm", ".codex-plugin", "plugin.json"); const manifest = JSON.parse(await readFile(manifestPath, "utf8")); manifest.version = version; await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
-    await mkdir(parsed.output, { recursive: true }); const archive = path.join(parsed.output, `${folderName}.tar.gz`); await run("tar", ["--sort=name", "--mtime=@0", "--owner=0", "--group=0", "--numeric-owner", "-czf", archive, "-C", temporary, folderName]);
+    await mkdir(parsed.output, { recursive: true }); const archive = path.join(parsed.output, `${folderName}.tar.gz`); await run("tar", ["--sort=name", "--mtime=@0", "--owner=0", "--group=0", "--numeric-owner", "--mode=go-w,u+rwX", "-czf", archive, "-C", temporary, folderName]);
     const digest = createHash("sha256").update(await readFile(archive)).digest("hex"); const digestFile = `${archive}.sha256`; await writeFile(digestFile, `${digest}  ${path.basename(archive)}\n`); console.log(JSON.stringify({ archive, version, sha256: digest })); return { archive, digestFile, version, sha256: digest };
   } finally { await rm(temporary, { recursive: true, force: true }); }
 }
