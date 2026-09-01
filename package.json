@@ -16,9 +16,9 @@
     "typescript": "^7"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.115.0",
-    "@google/genai": "^2.16.0",
-    "openai": "^7.4.0",
+    "@anthropic-ai/sdk": "^0.120.0",
+    "@google/genai": "^2.18.0",
+    "openai": "^7.5.0",
     "probot": "^14.3.2"
   }
 }
