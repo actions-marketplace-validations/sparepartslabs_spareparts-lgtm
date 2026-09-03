@@ -90,6 +90,10 @@ test("successful main pushes create one semantic tag and dispatch packaging", ()
   assert.match(source, /workflow_run\.conclusion == 'success'/);
   assert.match(source, /workflow_run\.event == 'push'/);
   assert.match(source, /workflow_run\.head_branch == 'main'/);
+  assert.match(source, /ref: main/);
+  assert.match(source, /CURRENT_SHA=\$\(git rev-parse HEAD\)/);
+  assert.match(source, /CURRENT_SHA.*!=.*TESTED_SHA/);
+  assert.doesNotMatch(source, /ref: \$\{\{ github\.event\.workflow_run\.head_sha \}\}/);
   assert.match(source, /cz bump --get-next/);
   assert.match(source, /git push origin "\$TAG"/);
   assert.match(source, /gh workflow run release-plugin\.yml --ref main -f tag="\$TAG"/);
