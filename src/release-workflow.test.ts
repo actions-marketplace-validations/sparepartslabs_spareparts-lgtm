@@ -68,7 +68,7 @@ test("release workflow preserves artifacts and uses canonical notes safely", () 
   assert.doesNotMatch(source, /openai-api-key|gemini-api-key/);
   assert.match(source, /write-repository: "false"/);
   assert.match(source, /id-token: write/);
-  assert.match(source, /uses: aws-actions\/configure-aws-credentials@v5/);
+  assert.match(source, /uses: aws-actions\/configure-aws-credentials@v6/);
   assert.match(source, /role-to-assume: \$\{\{ vars\.CHANGELOG_AWS_ROLE_ARN \}\}/);
   assert.match(source, /aws-region: \$\{\{ vars\.AWS_REGION \|\| 'us-east-1' \}\}/);
   assert.match(source, /publish-s3: "true"/);
