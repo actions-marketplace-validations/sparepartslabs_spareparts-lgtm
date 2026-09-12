@@ -52,7 +52,7 @@ jobs:
       # Still needed even though the action below is published: `uses: ./` runs
       # the action from this checkout, which is what dogfoods the same package
       # every consumer gets. A consuming repository needs no checkout at all.
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
 
       - name: Fetch the relayed event
         if: github.event_name == 'workflow_run'
