@@ -68,7 +68,7 @@ test("release workflow preserves artifacts and uses canonical notes safely", () 
   assert.doesNotMatch(source, /openai-api-key|gemini-api-key/);
   assert.match(source, /write-repository: "false"/);
   assert.match(source, /id-token: write/);
-  assert.match(source, /uses: aws-actions\/configure-aws-credentials@v5/);
+  assert.match(source, /uses: aws-actions\/configure-aws-credentials@v6/);
   assert.match(source, /role-to-assume: \$\{\{ vars\.CHANGELOG_AWS_ROLE_ARN \}\}/);
   assert.match(source, /aws-region: \$\{\{ vars\.AWS_REGION \|\| 'us-east-1' \}\}/);
   assert.match(source, /publish-s3: "true"/);
@@ -90,6 +90,10 @@ test("successful main pushes create one semantic tag and dispatch packaging", ()
   assert.match(source, /workflow_run\.conclusion == 'success'/);
   assert.match(source, /workflow_run\.event == 'push'/);
   assert.match(source, /workflow_run\.head_branch == 'main'/);
+  assert.match(source, /ref: main/);
+  assert.match(source, /CURRENT_SHA=\$\(git rev-parse HEAD\)/);
+  assert.match(source, /CURRENT_SHA.*!=.*TESTED_SHA/);
+  assert.doesNotMatch(source, /ref: \$\{\{ github\.event\.workflow_run\.head_sha \}\}/);
   assert.match(source, /cz bump --get-next/);
   assert.match(source, /git push origin "\$TAG"/);
   assert.match(source, /gh workflow run release-plugin\.yml --ref main -f tag="\$TAG"/);
